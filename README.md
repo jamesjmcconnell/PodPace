@@ -54,8 +54,8 @@ Before running the application, ensure you have the following installed on your 
     ASSEMBLYAI_API_KEY=<YOUR_ASSEMBLYAI_API_KEY>
 
     # PodcastIndex
-    PODCAST_INDEX_API_KEY=<YOuR_PODCASTINDEX_API_KEY>
-    PODCAST_INDEX_API_SECRET=your_podcastindex_secrEt
+    PODCAST_INDEX_API_KEY=<YOUR_PODCASTINDEX_API_KEY>
+    PODCAST_INDEX_API_SECRET=<YOUR_PODCASTINDEX_API_SECRET>
 
 
     # Define upload/output directories (optional, defaults are within backend/)
