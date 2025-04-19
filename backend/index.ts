@@ -368,7 +368,7 @@ const serverOptions: ServeOptions = {
             return handleStatus(req, pathSegments[2]); // pathSegments[2] is the job_id
         }
 
-        if (pathSegments[0] === 'api' && pathSegments[1] === 'adjust' && pathSegments[2] && req.method === 'POST') {i
+        if (pathSegments[0] === 'api' && pathSegments[1] === 'adjust' && pathSegments[2] && req.method === 'POST') {
             return handleAdjust(req, pathSegments[2]);
         }
 
