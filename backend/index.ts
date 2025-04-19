@@ -3,7 +3,9 @@ import Redis from 'ioredis';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'node:path';
 import fs from 'node:fs'; // Import the fs module
+import { handlePodcastSearch, handlePodcastEpisodes } from './routes/podcasts';
 import { type ServeOptions } from 'bun'; // Import ServeOptions type
+
 
 console.log('Starting backend server...');
 
@@ -323,8 +325,8 @@ async function handleDownload(req: Request, jobId: string): Promise<Response> {
 // --- Bun HTTP Server --- //
 const serverOptions: ServeOptions = {
     port: API_PORT,
-    // Set maximum request body size (e.g., 500 MiB)
-    maxRequestBodySize: 500 * 1024 * 1024, // 500 MiB in bytes
+    maxRequestBodySize: 500 * 1024 * 1024,
+    
     async fetch(req: Request): Promise<Response> {
         const url = new URL(req.url);
         const pathSegments = url.pathname.split('/').filter(Boolean); // e.g., ['api', 'upload']
@@ -343,6 +345,15 @@ const serverOptions: ServeOptions = {
                 }
             });
         }
+
+	if (pathSegments[0] === 'api' && pathSegments[1] === 'podcasts') {
+	  if (pathSegments[2] === 'search' && req.method === 'GET') {
+	    return handlePodcastSearch(req);
+	  }	
+	  if (pathSegments[2] === 'episodes' && req.method === 'GET') {
+	    return handlePodcastEpisodes(req);
+	  }
+	}
 
         // Basic Routing
         if (url.pathname === '/' && req.method === 'GET') {
@@ -368,6 +379,7 @@ const serverOptions: ServeOptions = {
         // Default Not Found
         return errorResponse('Not Found', 404);
     },
+
     error(error: Error): Response {
         console.error("Unhandled server error:", error);
         return errorResponse('Internal Server Error', 500);
