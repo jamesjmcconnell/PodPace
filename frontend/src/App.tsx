@@ -1,6 +1,4 @@
 import { useState } from 'react'
-// import reactLogo from './assets/react.svg'
-// import viteLogo from '/vite.svg'
 import './App.css'
 // Import component files
 import FileUpload from './components/FileUpload'
@@ -8,9 +6,12 @@ import JobProgress from './components/JobProgress'
 import SpeakerAdjuster from './components/SpeakerAdjuster'
 import DownloadArea from './components/DownloadArea'
 import ErrorMessage from './components/ErrorMessage'
+import SearchBar from './components/SearchBar'
 
 // Import frontend interfaces from the correct relative path
-import type { SpeakerWPM, JobStatus } from './interfaces'
+import type { SpeakerWPM, JobStatus, PodcastFeed } from './interfaces'
+
+
 
 // Define types for our state
 interface SpeakerInfo {
@@ -25,6 +26,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false); // For initial upload indication
   const [outputFilename, setOutputFilename] = useState<string | null>(null); // To construct download URL
+  const [mode, setMode] = useState<'UPLOAD' | 'SEARCH'>('UPLOAD'); // just tossing this in for now incase we want to keep the upload workflow
+  const [feeds, setFeeds] = useState<PodcastFeed[]>([]);
 
   // --- Handler Functions (to be passed to components) ---
 
@@ -91,19 +94,63 @@ function App() {
     setOutputFilename(null);
   };
 
+  const handlePodcastSearch = async (query: string) => {
+    try {
+        setError(null);
+        setIsLoading(true);
+        const apiUrl = '/api';
+        const res = await fetch (`${apiUrl}/podcasts/search?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        setFeeds(data.feeds);
+    } catch (e: any) {
+        setError(e.message);
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
   return (
     <div className="App">
       <h1>PodPace - Speech Normalizer</h1>
+      
+      <div>
+        <button
+            onClick={() => setMode('UPLOAD')}
+            className={mode === 'UPLOAD' ? 'active-tab' : ''}
+        >
+            Upload Audio
+        </button>
+
+        <button
+            onClick={() => setMode('SEARCH')}
+            className={mode === 'SEARCH' ? 'active-tab' : ''}
+        >
+            Search Podcasts
+        </button>
+      </div>
 
       <ErrorMessage message={error} />
 
-      {jobStatus === 'IDLE' && (
+
+      
+      {mode === 'UPLOAD' && jobStatus === 'IDLE' && (
         // Render FileUpload component when idle
         <FileUpload
           onUploadSuccess={handleUploadSuccess}
           onUploadError={handleUploadError}
           setIsLoading={setIsLoading}
         />
+      )}
+
+      {mode === 'SEARCH' && (
+        <div>
+        <SearchBar onSearch={handlePodcastSearch}/>
+        {feeds.length > 0 && (
+            <pre style={{ textAlign: 'left', whitespace: 'pre-wrap' }}>
+                {JSON.stringify(feeds, null, 2)}
+            </pre>
+        )}
+        </div>
       )}
 
       {isLoading && jobStatus !== 'FAILED' && <p>Uploading...</p>}

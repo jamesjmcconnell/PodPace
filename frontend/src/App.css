@@ -40,3 +40,14 @@
 .read-the-docs {
   color: #888;
 }
+
+button.active-tab {
+ background: var(--accent);
+ color: #ffff;
+}
+
+@media (max-width: 600px) {
+  .mode-toggle button {
+    flex: 1 1 50%;
+  }
+}
