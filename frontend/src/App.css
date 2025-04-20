@@ -43,7 +43,7 @@
 
 button.active-tab {
  background: var(--accent);
- color: #ffff;
+ color: #fff;
 }
 
 @media (max-width: 600px) {
@@ -51,3 +51,33 @@ button.active-tab {
     flex: 1 1 50%;
   }
 }
+
+.mode-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.show-card:hover {
+  transform: translateY(-3px);
+  transition: transform 0.12s ease;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* Simple spinner overlay */
+.spinner-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 1.2rem;
+  z-index: 999;
+}
+

@@ -7,9 +7,11 @@ import SpeakerAdjuster from './components/SpeakerAdjuster'
 import DownloadArea from './components/DownloadArea'
 import ErrorMessage from './components/ErrorMessage'
 import SearchBar from './components/SearchBar'
+import FeedList from './components/FeedList'
+import EpisodeList from './components/EpisodeList'
 
 // Import frontend interfaces from the correct relative path
-import type { SpeakerWPM, JobStatus, PodcastFeed } from './interfaces'
+import type { SpeakerWPM, JobStatus, PodcastFeed, PodcastEpisode } from './interfaces'
 
 
 
@@ -28,6 +30,9 @@ function App() {
   const [outputFilename, setOutputFilename] = useState<string | null>(null); // To construct download URL
   const [mode, setMode] = useState<'UPLOAD' | 'SEARCH'>('UPLOAD'); // just tossing this in for now incase we want to keep the upload workflow
   const [feeds, setFeeds] = useState<PodcastFeed[]>([]);
+  const [selectedFeed, setSelectedFeed] = useState<PodcastFeed | null>(null);
+  const [episodes, setEpisodes] = useState<PodcastEpisode[]>([]);
+  const [selectedEpisode, setSelectedEpisode] = useState<PodcastEpisode|null>(null);
 
   // --- Handler Functions (to be passed to components) ---
 
@@ -88,6 +93,7 @@ function App() {
   const handleReset = () => {
     setJobId(null);
     setJobStatus('IDLE');
+    setSelectedEpisode(null);
     setSpeakerData([]);
     setError(null);
     setIsLoading(false);
@@ -100,8 +106,18 @@ function App() {
         setIsLoading(true);
         const apiUrl = '/api';
         const res = await fetch (`${apiUrl}/podcasts/search?q=${encodeURIComponent(query)}`);
+        if (!res.ok) throw new Error(`Search failed (${res.status})`);
         const data = await res.json();
-        setFeeds(data.feeds);
+
+        // remapping feedId -> id for frontend and consistency. or, should we just use feedId and update FE logic...?
+        const feeds: PodcastFeed[] = data.feeds.map((f: any) => ({
+            id: f.feedId || f.id,
+            title: f.title,
+            description: f.description,
+            image: f.image,
+        }));
+        console.log('[handlePodcastSearch] Mapped feeds:', feeds);
+        setFeeds(feeds);
     } catch (e: any) {
         setError(e.message);
     } finally {
@@ -109,87 +125,146 @@ function App() {
     }
   };
 
-  return (
-    <div className="App">
-      <h1>PodPace - Speech Normalizer</h1>
-      
-      <div>
-        <button
-            onClick={() => setMode('UPLOAD')}
-            className={mode === 'UPLOAD' ? 'active-tab' : ''}
-        >
-            Upload Audio
-        </button>
+  const handleFeedSelect = async (feed: PodcastFeed) => {
+    try {
+        setSelectedFeed(feed);
+        setError(null);
+        setIsLoading(true);
+        const apiUrl = '/api';
+        const res = await fetch(`${apiUrl}/podcasts/episodes?feedId=${encodeURIComponent(feed.id)}`);
+        if (!res.ok) throw new Error(`Episode load failed (${res.status})`);
+        const data = await res.json();
+        console.log('[handleFeedSelect] got episodes', data.episodes);
+        setEpisodes(data.episodes);
+    } catch (e: any) {
+        setError(e.message);
+    } finally {
+        setIsLoading(false);
+    }
+  };
 
-        <button
-            onClick={() => setMode('SEARCH')}
-            className={mode === 'SEARCH' ? 'active-tab' : ''}
-        >
-            Search Podcasts
-        </button>
-      </div>
+  const handleEpisodeSelect = async (ep: PodcastEpisode) => {
+    try {
+        setError(null);
+        setIsLoading(true);
+        setSelectedEpisode(ep);
+        const audioResp = await fetch(ep.audioUrl);
+        if (!audioResp.ok) throw new Error(`Failed to download audio (${audioResp.status})`);
+        const blob = await audioResp.blob();
 
-      <ErrorMessage message={error} />
+        const form = new FormData();
+        const safeTitle = ep.title.replace(/[^a-z0-9]/gi, '_');
+        form.append('audioFile', blob, `${safeTitle}.mp3`);
 
+        const apiUrl = '/api';
+        const uploadRes = await fetch(`${apiUrl}/upload`, {
+            method: 'POST',
+            body: form,
+        });
+        const result = await uploadRes.json();
+        handleUploadSuccess(result.job_id);
+        setSelectedFeed(null);
+        setFeeds([]);
+        setEpisodes([]);
+        setMode('UPLOAD');
+    } catch (e: any) {
+        setError(e.message);
+    } finally {
+        setIsLoading(false);
+    }
+  }
 
-      
-      {mode === 'UPLOAD' && jobStatus === 'IDLE' && (
-        // Render FileUpload component when idle
-        <FileUpload
-          onUploadSuccess={handleUploadSuccess}
-          onUploadError={handleUploadError}
-          setIsLoading={setIsLoading}
-        />
-      )}
+    return (
+      <div className="App">
+        <h1>PodPace – Speech Normalizer</h1>
+        <ErrorMessage message={error} />
+        {isLoading && jobStatus !== 'FAILED' && <p>Uploading…</p>}
 
-      {mode === 'SEARCH' && (
-        <div>
-        <SearchBar onSearch={handlePodcastSearch}/>
-        {feeds.length > 0 && (
-            <pre style={{ textAlign: 'left', whitespace: 'pre-wrap' }}>
-                {JSON.stringify(feeds, null, 2)}
-            </pre>
+        { /* === NOTHING IN FLIGHT: show Upload vs Search === */ }
+        {jobStatus === 'IDLE' ? (
+          <>
+            <div className="mode-toggle">
+              <button
+                className={mode === 'UPLOAD' ? 'active-tab' : ''}
+                onClick={() => setMode('UPLOAD')}
+              >
+                Upload Audio
+              </button>
+              <button
+                className={mode === 'SEARCH' ? 'active-tab' : ''}
+                onClick={() => setMode('SEARCH')}
+              >
+                Search Podcasts
+              </button>
+            </div>
+
+            {mode === 'UPLOAD' && (
+              <FileUpload
+                onUploadSuccess={handleUploadSuccess}
+                onUploadError={handleUploadError}
+                setIsLoading={setIsLoading}
+              />
+            )}
+
+            {mode === 'SEARCH' && (
+              <>
+                <SearchBar onSearch={handlePodcastSearch} />
+                <FeedList feeds={feeds} onSelect={handleFeedSelect} />
+                {selectedFeed && (
+                  <>
+                    <h3>Episodes for “{selectedFeed.title}”</h3>
+                    <EpisodeList
+                      episodes={episodes}
+                      onSelectEpisode={handleEpisodeSelect}
+                    />
+                  </>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Show the selected episode title */}
+            {selectedEpisode && (
+              <h3 style={{ margin: '1rem 0' }}>
+                Processing episode: “{selectedEpisode.title}”
+              </h3>
+            )}
+
+            <JobProgress
+              jobId={jobId!}
+              currentStatus={jobStatus}
+              onStatusUpdate={handleStatusUpdate}
+            />
+
+            {jobStatus === 'READY_FOR_INPUT' && speakerData.length > 0 && (
+              <SpeakerAdjuster
+                jobId={jobId!}
+                speakerData={speakerData}
+                onSubmit={handleAdjustmentSubmit}
+                onError={handleUploadError}
+              />
+            )}
+
+            {/* Final download area with completed title */}
+            {jobStatus === 'COMPLETE' && jobId && outputFilename && (
+              <>
+                {selectedEpisode && (
+                  <h3 style={{ margin: '1rem 0' }}>
+                    Finished: “{selectedEpisode.title}”
+                  </h3>
+                )}
+                <DownloadArea jobId={jobId} outputFilename={outputFilename} />
+              </>
+            )}
+
+            {(jobStatus === 'FAILED' || jobStatus === 'COMPLETE') && (
+              <button onClick={handleReset}>Start New Job</button>
+            )}
+          </>
         )}
-        </div>
-      )}
-
-      {isLoading && jobStatus !== 'FAILED' && <p>Uploading...</p>}
-
-      {jobId &&
-        !['IDLE', 'FAILED', 'READY_FOR_INPUT', 'COMPLETE'].includes(jobStatus) && (
-          // Show JobProgress component while processing
-          <JobProgress
-            jobId={jobId}
-            currentStatus={jobStatus}
-            onStatusUpdate={handleStatusUpdate}
-          />
-      )}
-
-      {jobStatus === 'READY_FOR_INPUT' && speakerData.length > 0 && (
-        // Render SpeakerAdjuster component when ready for input
-        <SpeakerAdjuster
-            jobId={jobId!}
-            speakerData={speakerData}
-            onSubmit={handleAdjustmentSubmit}
-            onError={handleUploadError}
-        />
-      )}
-
-      {jobStatus === 'COMPLETE' && jobId && outputFilename && (
-        // Render DownloadArea component when complete
-        <DownloadArea
-            jobId={jobId}
-            outputFilename={outputFilename}
-        />
-      )}
-
-      {/* Optionally show a reset button if failed or complete */}
-      {(jobStatus === 'FAILED' || jobStatus === 'COMPLETE') && (
-          <button onClick={handleReset}>Start New Job</button>
-      )}
-
-    </div>
-  );
+      </div>
+    );
 }
 
 export default App
