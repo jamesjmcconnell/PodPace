@@ -53,6 +53,11 @@ Before running the application, ensure you have the following installed on your 
     # Cloud ASR/Diarization Provider (e.g., AssemblyAI)
     ASSEMBLYAI_API_KEY=<YOUR_ASSEMBLYAI_API_KEY>
 
+    # PodcastIndex
+    PODCAST_INDEX_API_KEY=<YOUR_PODCASTINDEX_API_KEY>
+    PODCAST_INDEX_API_SECRET=<YOUR_PODCASTINDEX_API_SECRET>
+
+
     # Define upload/output directories (optional, defaults are within backend/)
     # UPLOAD_DIR=./uploads
     # OUTPUT_DIR=./output
