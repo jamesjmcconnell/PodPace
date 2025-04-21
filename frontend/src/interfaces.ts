@@ -27,3 +27,17 @@ export type JobStatus =
   | 'PROCESSING_RECONSTRUCTION'
   | 'COMPLETE'
   | 'FAILED';
+
+export interface PodcastFeed {
+    id: string;
+    title: string;
+    description: string;
+    image: string;
+}
+
+export interface PodcastEpisode {
+    id: string;
+    title: string;
+    datePublished: string;
+    audioUrl: string;
+}
