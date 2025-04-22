@@ -38,6 +38,7 @@ export interface PodcastFeed {
 export interface PodcastEpisode {
     id: string;
     title: string;
-    datePublished: string;
+    datePublished: number; // Assuming this is a Unix timestamp (number)
+    datePublishedPretty: string; // Add the human-readable string field
     audioUrl: string;
 }
