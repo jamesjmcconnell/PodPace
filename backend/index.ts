@@ -13,6 +13,15 @@ console.log('Starting backend server...');
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
+const PODCAST_INDEX_API_KEY = process.env.PODCAST_INDEX_API_KEY; // Read Podcast Index Key
+const PODCAST_INDEX_API_SECRET = process.env.PODCAST_INDEX_API_SECRET; // Read Podcast Index Secret
+
+// --- Startup Verification Log ---
+console.log('[Startup] Verifying Podcast Index Env Vars:');
+console.log(`  - PODCAST_INDEX_API_KEY loaded: ${PODCAST_INDEX_API_KEY ? 'Yes' : 'No - Check .env!'}`)
+console.log(`  - PODCAST_INDEX_API_SECRET loaded: ${PODCAST_INDEX_API_SECRET ? 'Yes' : 'No - Check .env!'}`)
+// --- End Verification Log ---
+
 // Default directories within the backend directory if not specified by env vars
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(import.meta.dir, 'uploads');
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(import.meta.dir, 'output');
@@ -326,7 +335,7 @@ async function handleDownload(req: Request, jobId: string): Promise<Response> {
 const serverOptions: ServeOptions = {
     port: API_PORT,
     maxRequestBodySize: 500 * 1024 * 1024,
-    
+
     async fetch(req: Request): Promise<Response> {
         const url = new URL(req.url);
         const pathSegments = url.pathname.split('/').filter(Boolean); // e.g., ['api', 'upload']
@@ -349,7 +358,7 @@ const serverOptions: ServeOptions = {
 	if (pathSegments[0] === 'api' && pathSegments[1] === 'podcasts') {
 	  if (pathSegments[2] === 'search' && req.method === 'GET') {
 	    return handlePodcastSearch(req);
-	  }	
+	  }
 	  if (pathSegments[2] === 'episodes' && req.method === 'GET') {
 	    return handlePodcastEpisodes(req);
 	  }

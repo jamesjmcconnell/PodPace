@@ -33,6 +33,11 @@ function App() {
   const [selectedFeed, setSelectedFeed] = useState<PodcastFeed | null>(null);
   const [episodes, setEpisodes] = useState<PodcastEpisode[]>([]);
   const [selectedEpisode, setSelectedEpisode] = useState<PodcastEpisode|null>(null);
+  // New state for episode loading and pagination
+  const [isLoadingEpisodes, setIsLoadingEpisodes] = useState<boolean>(false);
+  const [hasMoreEpisodes, setHasMoreEpisodes] = useState<boolean>(false);
+  const [lastEpisodeTimestamp, setLastEpisodeTimestamp] = useState<number | null>(null);
+  const EPISODE_PAGE_SIZE = 20; // How many episodes to fetch per batch
 
   // --- Handler Functions (to be passed to components) ---
 
@@ -126,20 +131,91 @@ function App() {
   };
 
   const handleFeedSelect = async (feed: PodcastFeed) => {
+    setSelectedFeed(feed);
+    setError(null);
+    setEpisodes([]); // Clear previous episodes
+    setHasMoreEpisodes(false); // Reset pagination state
+    setLastEpisodeTimestamp(null);
+    setIsLoadingEpisodes(true);
+
     try {
-        setSelectedFeed(feed);
-        setError(null);
-        setIsLoading(true);
+      const apiUrl = '/api';
+      // Initial fetch (no 'since', use EPISODE_PAGE_SIZE for max)
+      const res = await fetch(`${apiUrl}/podcasts/episodes?feedId=${encodeURIComponent(feed.id)}&max=${EPISODE_PAGE_SIZE}`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: `Episode load failed (${res.status})` }));
+        throw new Error(errorData.error || `Episode load failed (${res.status})`);
+      }
+      const data = await res.json();
+      console.log('[handleFeedSelect] got episodes response:', data);
+
+      const mappedEpisodes: PodcastEpisode[] = (data.episodes || []).map((ep: any) => ({
+        id: String(ep.id), // Ensure ID is a string
+        title: ep.title,
+        datePublished: parseInt(ep.datePublished, 10), // Parse the timestamp as integer
+        datePublishedPretty: ep.datePublishedPretty, // Map the pretty date string
+        audioUrl: ep.audioUrl,
+      }));
+
+      setEpisodes(mappedEpisodes);
+
+      // Update pagination state: More exist if we received any episodes
+      setHasMoreEpisodes(mappedEpisodes.length > 0);
+      if (mappedEpisodes.length > 0) {
+        setLastEpisodeTimestamp(mappedEpisodes[mappedEpisodes.length - 1].datePublished);
+      }
+
+    } catch (e: any) {
+      setError(e.message);
+      setEpisodes([]); // Clear episodes on error
+    } finally {
+      setIsLoadingEpisodes(false);
+    }
+  };
+
+  // Function to load the next batch of episodes
+  const loadMoreEpisodes = async () => {
+    if (!selectedFeed || isLoadingEpisodes || !hasMoreEpisodes || lastEpisodeTimestamp === null) {
+        console.log('[loadMoreEpisodes] Skipping: Not ready or no more episodes.');
+        return; // Don't load if already loading, no more pages, or initial load pending
+    }
+
+    console.log(`[loadMoreEpisodes] Loading more for feed ${selectedFeed.id} since ${lastEpisodeTimestamp}`);
+    setIsLoadingEpisodes(true);
+    setError(null); // Clear previous errors
+
+    try {
         const apiUrl = '/api';
-        const res = await fetch(`${apiUrl}/podcasts/episodes?feedId=${encodeURIComponent(feed.id)}`);
-        if (!res.ok) throw new Error(`Episode load failed (${res.status})`);
+        const res = await fetch(`${apiUrl}/podcasts/episodes?feedId=${encodeURIComponent(selectedFeed.id)}&max=${EPISODE_PAGE_SIZE}&since=${lastEpisodeTimestamp}`);
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({ error: `Load more failed (${res.status})` }));
+            throw new Error(errorData.error || `Load more failed (${res.status})`);
+        }
         const data = await res.json();
-        console.log('[handleFeedSelect] got episodes', data.episodes);
-        setEpisodes(data.episodes);
+        console.log('[loadMoreEpisodes] got episodes response:', data);
+
+        const newEpisodes: PodcastEpisode[] = (data.episodes || []).map((ep: any) => ({
+          id: String(ep.id), // Ensure ID is a string
+          title: ep.title,
+          datePublished: parseInt(ep.datePublished, 10), // Parse the timestamp as integer
+          datePublishedPretty: ep.datePublishedPretty, // Map the pretty date string
+          audioUrl: ep.audioUrl,
+        }));
+
+        // Append new episodes to the existing list
+        setEpisodes(prevEpisodes => [...prevEpisodes, ...newEpisodes]);
+
+        // Update pagination state: More exist if the API returned new episodes
+        setHasMoreEpisodes(newEpisodes.length > 0);
+        if (newEpisodes.length > 0) {
+           setLastEpisodeTimestamp(newEpisodes[newEpisodes.length - 1].datePublished);
+        }
+
     } catch (e: any) {
         setError(e.message);
+        setHasMoreEpisodes(false); // Stop trying on error
     } finally {
-        setIsLoading(false);
+        setIsLoadingEpisodes(false);
     }
   };
 
@@ -174,31 +250,46 @@ function App() {
     }
   }
 
+  // Add handler to go back from episodes view to feed search view
+  const handleGoBackToSearch = () => {
+    setSelectedFeed(null);
+    setEpisodes([]);
+    // Optionally clear search results (feeds) too if desired
+    // setFeeds([]);
+  };
+
     return (
       <div className="App">
-        <h1>PodPace – Speech Normalizer</h1>
+        {/* --- Conditional Title --- */}
+        {jobStatus === 'IDLE' && !selectedFeed && (
+          <h1>PodPace – Speech Normalizer</h1>
+        )}
+
         <ErrorMessage message={error} />
         {isLoading && jobStatus !== 'FAILED' && <p>Uploading…</p>}
 
         { /* === NOTHING IN FLIGHT: show Upload vs Search === */ }
         {jobStatus === 'IDLE' ? (
           <>
-            <div className="mode-toggle">
-              <button
-                className={mode === 'UPLOAD' ? 'active-tab' : ''}
-                onClick={() => setMode('UPLOAD')}
-              >
-                Upload Audio
-              </button>
-              <button
-                className={mode === 'SEARCH' ? 'active-tab' : ''}
-                onClick={() => setMode('SEARCH')}
-              >
-                Search Podcasts
-              </button>
-            </div>
+            {/* --- Conditional Mode Toggle --- */}
+            {!selectedFeed && (
+              <div className="mode-toggle">
+                <button
+                  className={mode === 'UPLOAD' ? 'active-tab' : ''}
+                  onClick={() => setMode('UPLOAD')}
+                >
+                  Upload Audio
+                </button>
+                <button
+                  className={mode === 'SEARCH' ? 'active-tab' : ''}
+                  onClick={() => setMode('SEARCH')}
+                >
+                  Search Podcasts
+                </button>
+              </div>
+            )}
 
-            {mode === 'UPLOAD' && (
+            {mode === 'UPLOAD' && !selectedFeed && (
               <FileUpload
                 onUploadSuccess={handleUploadSuccess}
                 onUploadError={handleUploadError}
@@ -208,14 +299,31 @@ function App() {
 
             {mode === 'SEARCH' && (
               <>
-                <SearchBar onSearch={handlePodcastSearch} />
-                <FeedList feeds={feeds} onSelect={handleFeedSelect} />
-                {selectedFeed && (
+                {/* Conditional Rendering based on selectedFeed (already implemented) */}
+                {!selectedFeed ? (
+                  /* Show Search Bar and Feed List */
                   <>
-                    <h3>Episodes for “{selectedFeed.title}”</h3>
+                    <SearchBar onSearch={handlePodcastSearch} />
+                    <FeedList feeds={feeds} onSelect={handleFeedSelect} />
+                  </>
+                ) : (
+                  /* Show Selected Feed Details and Episode List */
+                  <>
+                    <button onClick={handleGoBackToSearch} style={{ marginBottom: '1rem' }}>
+                      &larr; Back to Search
+                    </button>
+                    {/* Optional: Add a smaller title here if needed when main title is hidden */}
+                    {/* <h2 style={{ marginTop: 0 }}>PodPace</h2> */}
+                    <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                       <img src={selectedFeed.image} alt={selectedFeed.title} style={{ height: '60px', width: '60px', borderRadius: '4px' }} />
+                       <h3>Episodes for "{selectedFeed.title}"</h3>
+                    </div>
                     <EpisodeList
                       episodes={episodes}
                       onSelectEpisode={handleEpisodeSelect}
+                      isLoading={isLoadingEpisodes}
+                      hasMore={hasMoreEpisodes}
+                      onLoadMore={loadMoreEpisodes}
                     />
                   </>
                 )}
@@ -227,7 +335,7 @@ function App() {
             {/* Show the selected episode title */}
             {selectedEpisode && (
               <h3 style={{ margin: '1rem 0' }}>
-                Processing episode: “{selectedEpisode.title}”
+                Processing episode: "{selectedEpisode.title}"
               </h3>
             )}
 
@@ -251,7 +359,7 @@ function App() {
               <>
                 {selectedEpisode && (
                   <h3 style={{ margin: '1rem 0' }}>
-                    Finished: “{selectedEpisode.title}”
+                    Finished: "{selectedEpisode.title}"
                   </h3>
                 )}
                 <DownloadArea jobId={jobId} outputFilename={outputFilename} />
