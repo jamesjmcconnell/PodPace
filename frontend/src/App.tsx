@@ -260,77 +260,74 @@ function App() {
 
     return (
       <div className="App">
-        {/* --- Conditional Title --- */}
-        {jobStatus === 'IDLE' && !selectedFeed && (
-          <h1>PodPace – Speech Normalizer</h1>
-        )}
-
         <ErrorMessage message={error} />
-        {isLoading && jobStatus !== 'FAILED' && <p>Uploading…</p>}
+        {/* Loading indicators */}
+        {isLoadingEpisodes && episodes.length === 0 && <p>Loading Episodes…</p>}
+        {isLoading && jobStatus !== 'FAILED' && episodes.length === 0 && !isLoadingEpisodes && <p>Uploading…</p>}
 
-        { /* === NOTHING IN FLIGHT: show Upload vs Search === */ }
-        {jobStatus === 'IDLE' ? (
+        {/* --- Idle State Rendering --- */}
+        {jobStatus === 'IDLE' && (
           <>
-            {/* --- Conditional Mode Toggle --- */}
+            {/* --- Initial View (No Feed Selected) --- */}
             {!selectedFeed && (
-              <div className="mode-toggle">
-                <button
-                  className={mode === 'UPLOAD' ? 'active-tab' : ''}
-                  onClick={() => setMode('UPLOAD')}
-                >
-                  Upload Audio
-                </button>
-                <button
-                  className={mode === 'SEARCH' ? 'active-tab' : ''}
-                  onClick={() => setMode('SEARCH')}
-                >
-                  Search Podcasts
-                </button>
-              </div>
-            )}
-
-            {mode === 'UPLOAD' && !selectedFeed && (
-              <FileUpload
-                onUploadSuccess={handleUploadSuccess}
-                onUploadError={handleUploadError}
-                setIsLoading={setIsLoading}
-              />
-            )}
-
-            {mode === 'SEARCH' && (
               <>
-                {/* Conditional Rendering based on selectedFeed (already implemented) */}
-                {!selectedFeed ? (
-                  /* Show Search Bar and Feed List */
+                <h1>PodPace – Speech Normalizer</h1>
+                <div className="mode-toggle">
+                  <button
+                    className={mode === 'UPLOAD' ? 'active-tab' : ''}
+                    onClick={() => setMode('UPLOAD')}
+                  >
+                    Upload Audio
+                  </button>
+                  <button
+                    className={mode === 'SEARCH' ? 'active-tab' : ''}
+                    onClick={() => setMode('SEARCH')}
+                  >
+                    Search Podcasts
+                  </button>
+                </div>
+
+                {mode === 'UPLOAD' && (
+                  <FileUpload
+                    onUploadSuccess={handleUploadSuccess}
+                    onUploadError={handleUploadError}
+                    setIsLoading={setIsLoading}
+                  />
+                )}
+
+                {mode === 'SEARCH' && (
                   <>
                     <SearchBar onSearch={handlePodcastSearch} />
                     <FeedList feeds={feeds} onSelect={handleFeedSelect} />
                   </>
-                ) : (
-                  /* Show Selected Feed Details and Episode List */
-                  <>
-                    <button onClick={handleGoBackToSearch} style={{ marginBottom: '1rem' }}>
-                      &larr; Back to Search
-                    </button>
-                    {/* Optional: Add a smaller title here if needed when main title is hidden */}
-                    {/* <h2 style={{ marginTop: 0 }}>PodPace</h2> */}
-                    <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                       <img src={selectedFeed.image} alt={selectedFeed.title} style={{ height: '60px', width: '60px', borderRadius: '4px' }} />
-                       <h3>Episodes for "{selectedFeed.title}"</h3>
-                    </div>
-                    <EpisodeList
-                      episodes={episodes}
-                      onSelectEpisode={handleEpisodeSelect}
-                      isLoading={isLoadingEpisodes}
-                      hasMore={hasMoreEpisodes}
-                      onLoadMore={loadMoreEpisodes}
-                    />
-                  </>
                 )}
               </>
             )}
+
+            {/* --- Episode View (Feed Selected) --- */}
+            {selectedFeed && (
+              <>
+                <button onClick={handleGoBackToSearch} style={{ marginBottom: '1rem' }}>
+                  &larr; Back to Search
+                </button>
+                <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                   <img src={selectedFeed.image} alt={selectedFeed.title} style={{ height: '60px', width: '60px', borderRadius: '4px' }} />
+                   <h3>Episodes for "{selectedFeed.title}"</h3>
+                </div>
+                <EpisodeList
+                  episodes={episodes}
+                  onSelectEpisode={handleEpisodeSelect}
+                  isLoading={isLoadingEpisodes}
+                  hasMore={hasMoreEpisodes}
+                  onLoadMore={loadMoreEpisodes}
+                />
+              </>
+            )}
           </>
-        ) : (
+        )}
+
+        {/* --- Active Job State Rendering --- */}
+        {jobStatus !== 'IDLE' && (
           <>
             {/* Show the selected episode title */}
             {selectedEpisode && (
