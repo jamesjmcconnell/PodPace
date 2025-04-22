@@ -30,3 +30,6 @@ frontend/node_modules/
 
 # OS specific
 .DS_Store
+
+# Ignore environment setup script (contains secrets)
+backend/set_env.sh

@@ -360,7 +360,7 @@ const serverOptions: ServeOptions = {
 	    return handlePodcastSearch(req);
 	  }
 	  if (pathSegments[2] === 'episodes' && req.method === 'GET') {
-	    return handlePodcastEpisodes(req);
+	    return handlePodcastEpisodes(req, redisConnection);
 	  }
 	}
 

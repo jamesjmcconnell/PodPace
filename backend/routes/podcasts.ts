@@ -1,5 +1,7 @@
 // routes/podcasts.ts
 
+import { Redis } from 'ioredis'; // Import Redis type
+
 const API_BASE = 'https://api.podcastindex.org/api/1.0';
 const API_KEY = process.env.PODCAST_INDEX_API_KEY!;
 const API_SECRET = process.env.PODCAST_INDEX_API_SECRET!;
@@ -87,15 +89,17 @@ export async function handlePodcastSearch(req: Request): Promise<Response> {
   }
 }
 
+const PODCAST_EPISODES_CACHE_TTL = 3600; // Cache episodes for 1 hour (in seconds)
+
 /**
  * Handles GET /api/podcasts/episodes?feedId=ID[&max=NUM][&since=TIMESTAMP]
  */
-export async function handlePodcastEpisodes(req: Request): Promise<Response> {
+export async function handlePodcastEpisodes(req: Request, redis: Redis): Promise<Response> {
   console.log('[PodcastEpisodes] Request:', req.method, req.url);
   const url    = new URL(req.url);
   const feedId = (url.searchParams.get('feedId') || '').trim();
-  const max    = url.searchParams.get('max') || '20'; // Default to fetching 20 episodes
-  const since  = url.searchParams.get('since'); // Optional timestamp for pagination
+  const max    = url.searchParams.get('max') || '20';
+  const since  = url.searchParams.get('since');
 
   if (!feedId) {
     console.warn('[PodcastEpisodes] Missing query parameter feedId');
@@ -106,6 +110,31 @@ export async function handlePodcastEpisodes(req: Request): Promise<Response> {
   }
   console.log(`[PodcastEpisodes] Feed ID: ${feedId}, Max: ${max}${since ? ", Since: "+since : ""}`);
 
+  // --- Caching Logic ---
+  const cacheKey = `cache:podcast-episodes:${feedId}:max=${max}:since=${since || 'initial'}`;
+  console.log(`[PodcastEpisodes] Cache Key: ${cacheKey}`);
+
+  try {
+    const cachedData = await redis.get(cacheKey);
+    if (cachedData) {
+      console.log('[PodcastEpisodes] Cache HIT');
+      // Assuming cached data is the JSON string of { episodes, count }
+      // We need to return it as a Response, just like the non-cached path
+      return new Response(cachedData, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Cache-Hit': 'true' // Optional header to indicate cache usage
+        }
+      });
+    }
+    console.log('[PodcastEpisodes] Cache MISS');
+  } catch (cacheError: any) {
+      console.error(`[PodcastEpisodes] Redis GET error for key ${cacheKey}:`, cacheError);
+      // Proceed without cache if Redis read fails
+  }
+  // --- End Caching Logic ---
+
+  // --- Cache Miss: Fetch from API ---
   try {
     const params: Record<string, string> = { id: feedId, max };
     if (since) {
@@ -124,8 +153,8 @@ export async function handlePodcastEpisodes(req: Request): Promise<Response> {
          throw new Error(`PodcastIndex episodes failed: ${resp.status} - ${errorText}`);
     }
 
-    // Add 'count' to the response interface definition
-    const episodesData = await resp.json() as PodcastIndexEpisodesResponse & { count?: number };
+    const apiResponseText = await resp.text(); // Get response as text to cache it directly
+    const episodesData = JSON.parse(apiResponseText) as PodcastIndexEpisodesResponse & { count?: number };
 
     const episodes = (episodesData.items || []).map((i) => ({
       id:        i.id,
@@ -136,13 +165,32 @@ export async function handlePodcastEpisodes(req: Request): Promise<Response> {
       duration:  i.duration,
     }));
 
-    const count = episodesData.count ?? episodes.length; // Use count from response, fallback to array length
+    const count = episodesData.count ?? episodes.length;
     console.log(`[PodcastEpisodes] Fetched: ${episodes.length}, API Count: ${count}`);
 
-    // Return episodes and the count
-    return new Response(JSON.stringify({ episodes, count }), { headers: { 'Content-Type': 'application/json' } });
+    // Prepare the structure to cache and return
+    const resultToCacheAndReturn = { episodes, count };
+    const resultString = JSON.stringify(resultToCacheAndReturn);
+
+    // Set data in cache with TTL
+    try {
+        await redis.set(cacheKey, resultString, 'EX', PODCAST_EPISODES_CACHE_TTL);
+        console.log(`[PodcastEpisodes] Data stored in cache (TTL: ${PODCAST_EPISODES_CACHE_TTL}s)`);
+    } catch (cacheSetError: any) {
+        console.error(`[PodcastEpisodes] Redis SET error for key ${cacheKey}:`, cacheSetError);
+        // Continue even if cache write fails
+    }
+
+    // Return the result from API
+    return new Response(resultString, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cache-Hit': 'false' // Optional header
+      }
+    });
+
   } catch (err: any) {
-    console.error('[PodcastEpisodes] Error:', err);
+    console.error('[PodcastEpisodes] Error fetching from API:', err);
     return new Response(JSON.stringify({ error: 'Episodes fetch error.' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
