@@ -74,3 +74,4 @@ The application now uses Supabase for authentication. Users can sign up or log i
 *   **X (Twitter) Login:** Click button, authenticate with X.
 
 Protected backend API routes now require a valid authentication token obtained after login.
+
