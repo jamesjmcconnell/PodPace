@@ -82,3 +82,6 @@ This command uses `concurrently` to start the backend API, both backend workers,
     *   You will see interleaved logs from all four processes in your terminal.
     *   The frontend development server typically runs on `http://localhost:5173`.
     *   Open the URL provided for the frontend dev server in your web browser.
+
+
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/jamesjmcconnell/PodPace?utm_source=oss&utm_medium=github&utm_campaign=jamesjmcconnell%2FPodPace&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
