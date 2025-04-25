@@ -26,7 +26,7 @@ backend/.idea/
 # Frontend specific (examples)
 frontend/node_modules/
 # frontend/dist/
-# frontend/.env*
+frontend/.env*
 
 # OS specific
 .DS_Store

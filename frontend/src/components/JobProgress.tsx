@@ -4,9 +4,10 @@ interface JobProgressProps {
   jobId: string;
   onStatusUpdate: (statusData: any) => void; // We expect the full status object
   currentStatus: string; // Pass current status to help decide when to stop polling
+  getAuthHeaders: () => Record<string, string>; // Add prop type
 }
 
-const JobProgress: React.FC<JobProgressProps> = ({ jobId, onStatusUpdate, currentStatus }) => {
+const JobProgress: React.FC<JobProgressProps> = ({ jobId, onStatusUpdate, currentStatus, getAuthHeaders }) => {
   const [error, setError] = useState<string | null>(null);
   // Use ReturnType<typeof setInterval> for the correct interval ID type
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -22,7 +23,9 @@ const JobProgress: React.FC<JobProgressProps> = ({ jobId, onStatusUpdate, curren
     try {
       const apiUrl = '/api'; // Use relative path for Vite proxy
       console.log(`[JobProgress] Fetching: ${apiUrl}/status/${jobId}`);
-      const response = await fetch(`${apiUrl}/status/${jobId}`);
+      const response = await fetch(`${apiUrl}/status/${jobId}`, {
+        headers: getAuthHeaders() // Use the passed function
+      });
       const result = await response.json();
       console.log(`[JobProgress] Poll response OK: ${response.ok}, Status: ${response.status}`);
 

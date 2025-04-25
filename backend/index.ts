@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs'; // Import the fs module
 import { handlePodcastSearch, handlePodcastEpisodes } from './routes/podcasts';
 import { type ServeOptions } from 'bun'; // Import ServeOptions type
+import { verifyAuth } from './middleware/auth'; // Import the auth middleware
 
 
 console.log('Starting backend server...');
@@ -123,7 +124,8 @@ function jsonResponse(data: any, status: number = 200, headers?: Record<string, 
     });
 }
 
-function errorResponse(message: string, status: number = 500) {
+// Export errorResponse so it can be used elsewhere if needed (e.g., potentially in middleware later)
+export function errorResponse(message: string, status: number = 500) {
     console.error(`Returning error (${status}): ${message}`);
     return jsonResponse({ error: message }, status);
 }
@@ -355,37 +357,52 @@ const serverOptions: ServeOptions = {
             });
         }
 
-	if (pathSegments[0] === 'api' && pathSegments[1] === 'podcasts') {
-	  if (pathSegments[2] === 'search' && req.method === 'GET') {
-	    return handlePodcastSearch(req);
-	  }
-	  if (pathSegments[2] === 'episodes' && req.method === 'GET') {
-	    return handlePodcastEpisodes(req, redisConnection);
-	  }
-	}
-
-        // Basic Routing
+        // --- Public Routes (No Auth Required) ---
         if (url.pathname === '/' && req.method === 'GET') {
             return jsonResponse({ status: 'ok', timestamp: Date.now() });
         }
+        if (pathSegments[0] === 'api' && pathSegments[1] === 'podcasts') {
+            if (pathSegments[2] === 'search' && req.method === 'GET') {
+                return handlePodcastSearch(req);
+            }
+            if (pathSegments[2] === 'episodes' && req.method === 'GET') {
+                return handlePodcastEpisodes(req, redisConnection);
+            }
+        }
+
+        // --- Protected Routes (Auth Required) ---
+
+        // Verify Auth for all subsequent routes
+        const user = await verifyAuth(req);
+        if (!user) {
+            return errorResponse('Unauthorized: Invalid or missing token', 401);
+        }
+        // If we reach here, user is authenticated
+        console.log(`[Auth] Request authorized for user: ${user.id}`);
 
         if (url.pathname === '/api/upload' && req.method === 'POST') {
-            return handleUpload(req);
+            return handleUpload(req /*, user */);
         }
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'status' && pathSegments[2] && req.method === 'GET') {
-            return handleStatus(req, pathSegments[2]); // pathSegments[2] is the job_id
+            const jobId = pathSegments[2];
+            // TODO: Optionally add logic to check if this user owns the job
+            return handleStatus(req, jobId /*, user */);
         }
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'adjust' && pathSegments[2] && req.method === 'POST') {
-            return handleAdjust(req, pathSegments[2]);
+            const jobId = pathSegments[2];
+            // TODO: Optionally add logic to check if this user owns the job
+            return handleAdjust(req, jobId /*, user */);
         }
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'download' && pathSegments[2] && req.method === 'GET') {
-            return handleDownload(req, pathSegments[2]);
+            const jobId = pathSegments[2];
+            // TODO: Optionally add logic to check if this user owns the job
+            return handleDownload(req, jobId /*, user */);
         }
 
-        // Default Not Found
+        // Default Not Found for authenticated users hitting unknown paths
         return errorResponse('Not Found', 404);
     },
 
