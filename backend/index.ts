@@ -110,7 +110,14 @@ async function getJobInfo(jobId: string): Promise<Record<string, string> | null>
     }
 }
 
-// --- Response Helpers ---
+/**
+ * Creates a JSON HTTP response with appropriate CORS headers.
+ *
+ * @param data - The data to serialize as JSON in the response body.
+ * @param status - The HTTP status code to use for the response. Defaults to 200.
+ * @param headers - Optional additional headers to include in the response.
+ * @returns A Response object containing the JSON-encoded data and CORS headers.
+ */
 function jsonResponse(data: any, status: number = 200, headers?: Record<string, string>) {
     return new Response(JSON.stringify(data), {
         status: status,
@@ -124,7 +131,13 @@ function jsonResponse(data: any, status: number = 200, headers?: Record<string, 
     });
 }
 
-// Export errorResponse so it can be used elsewhere if needed (e.g., potentially in middleware later)
+/**
+ * Creates a standardized JSON error response with the given message and HTTP status code.
+ *
+ * @param message - The error message to include in the response.
+ * @param status - The HTTP status code to use for the response. Defaults to 500.
+ * @returns An HTTP response object containing the error message in JSON format.
+ */
 export function errorResponse(message: string, status: number = 500) {
     console.error(`Returning error (${status}): ${message}`);
     return jsonResponse({ error: message }, status);
