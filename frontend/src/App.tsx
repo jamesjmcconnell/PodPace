@@ -23,6 +23,13 @@ interface SpeakerInfo {
   avg_wpm: number;
 }
 
+/**
+ * Main React component for the podcast processing application, managing authentication, podcast search, audio upload, episode browsing, job processing, and file download flows.
+ *
+ * Handles user authentication state, UI mode switching, podcast and episode selection, audio upload, job status tracking, speaker adjustment, and secure file downloads. Integrates with multiple child components and manages all relevant application state and error handling.
+ *
+ * @returns The rendered podcast processing application UI.
+ */
 function App() {
   // Get auth state from context
   const { session, user, loading: authLoading, signOut } = useAuth();
