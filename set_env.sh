@@ -19,7 +19,7 @@ set +a
 # ──────────────────────
 
 # Jump to repo root so `bun run dev` finds the root package.json
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || { echo "[set_env] Failed to change to repository root directory" >&2; exit 1; }
 
 # Exec the rest of the CLI line, if any
 if [[ $# -gt 0 ]]; then
