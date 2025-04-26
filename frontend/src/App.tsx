@@ -248,35 +248,57 @@ function App() {
         setError(null);
         setIsLoading(true);
         setSelectedEpisode(ep);
-        const audioResp = await fetch(ep.audioUrl);
-        if (!audioResp.ok) throw new Error(`Failed to download audio (${audioResp.status})`);
+
+        // Fetch audio via backend proxy to avoid CORS
+        console.log(`[App] Requesting proxy for audio: ${ep.audioUrl}`);
+        const proxyUrl = `/api/proxy/audio?url=${encodeURIComponent(ep.audioUrl)}`;
+        const audioResp = await fetch(proxyUrl);
+
+        if (!audioResp.ok) {
+            // Try to get error message from proxy if possible
+            const errorText = await audioResp.text().catch(() => `Proxy fetch failed with status ${audioResp.status}`);
+            console.error(`[App] Proxy fetch failed: ${audioResp.status}`, errorText);
+            // Attempt to parse JSON, fallback to text
+            let errorMessage = `Proxy fetch failed (${audioResp.status})`;
+            try {
+                const errorJson = JSON.parse(errorText);
+                if (errorJson.error) errorMessage = errorJson.error;
+            } catch { /* Ignore JSON parse error */ }
+            throw new Error(errorMessage);
+        }
+        console.log(`[App] Proxy fetch successful, getting blob.`);
         const blob = await audioResp.blob();
 
+        // Proceed with upload using the blob from the proxy
         const form = new FormData();
         const safeTitle = ep.title.replace(/[^a-z0-9]/gi, '_');
         form.append('audioFile', blob, `${safeTitle}.mp3`);
 
         const apiUrl = '/api';
+        console.log('[App] Uploading blob from proxy...');
         const uploadRes = await fetch(`${apiUrl}/upload`, {
             method: 'POST',
             headers: {
-               // No 'Content-Type' needed for FormData
-              ...getAuthHeaders() // Add Authorization header
+                ...getAuthHeaders()
             },
             body: form,
         });
-        if (!uploadRes.ok) { // Check response status
+        if (!uploadRes.ok) {
             const errorData = await uploadRes.json().catch(() => ({ error: `Upload failed (${uploadRes.status})` }));
             throw new Error(errorData.error || `Upload failed (${uploadRes.status})`);
         }
         const result = await uploadRes.json();
+        console.log('[App] Upload successful after proxy.');
         handleUploadSuccess(result.job_id);
         setSelectedFeed(null);
         setFeeds([]);
         setEpisodes([]);
         setMode('UPLOAD');
     } catch (e: any) {
+        console.error('[App] Error during episode selection/upload:', e);
         setError(e.message);
+        // Reset relevant state on error?
+        setSelectedEpisode(null);
     } finally {
         setIsLoading(false);
     }
