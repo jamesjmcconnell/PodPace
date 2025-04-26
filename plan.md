@@ -1,156 +1,131 @@
-# PodPace v2 – Updated Development Plan
+# PodPace v2 – Updated Development Plan (Focus: Gating Infrastructure)
 
 ## 0. Purpose of this document
-This plan incorporates the newly-defined product rules around **anonymous usage, account creation, daily free quotas, paid subscriptions, user profiles, and per-user preferences**.  It supersedes the previous plan.md.
+This plan outlines the next steps focusing on implementing the infrastructure for **feature gating** based on user status: **anonymous visitor**, **logged-in free user**, or **paid subscriber**. This includes handling the daily free quota and integrating with a payment provider (Stripe) to track subscription status.
+
+It assumes **existing Supabase authentication** is functional. It **defers** the full implementation of paid-only features (e.g., podcast subscriptions, extended history) but includes the necessary backend setup (webhooks, subscription status tracking) to enable gating them later.
 
 ---
 
-## 1. Product Overview & Personas
-| Persona | Capabilities |
-|---------|--------------|
-| **Visitor (anonymous)** | • Land on default search page
-• Search any public podcast
-• Choose an episode → backend immediately runs AssemblyAI analysis
-• See the **Speaker Adjustment Preview** screen (hear 10-15 sec preview per speaker at adjustable WPM/volume)
-• *Cannot* apply full-length modifications or download audio
-• Prompted to **Sign-up for free** or **Login** |
-| **Free Account (user)** | • All Visitor features
-• Can fully process **1 episode / 24 h** (hard ceiling)
-• Download adjusted audio (single file)
-• Basic **History** tab (shows last 30 processed episodes)
-• Can set global speed/volume defaults in **Profile**
-• Upgrade CTA shown after quota consumed |
-| **Paid Subscriber** | • Unlimited processing
-• Can create **Podcast Subscriptions**: PodPace periodically fetches new episodes & auto-applies user defaults
-• Private RSS feed per user for auto-processed episodes
-• Extended History (all time)
-• Priority queue
-• Early feature access |
+## 1. Product Overview & Personas (Gating Focus)
+| Persona | Gating | Capabilities (Immediate Focus) |
+|---------|--------|--------------------------------|
+| **Visitor (anonymous)** | `!auth` | • Search, see preview UI (inputs disabled) |
+| **Free Account (user)** | `auth && !subscriptionActive` | • All Visitor features <br> • Process 1 ep/day (quota check) <br> • Download processed file |
+| **Paid Subscriber** | `auth && subscriptionActive` | • All Free features <br> • Unlimited processing (bypass quota) |
+| *[Deferred Features]* | | *[Podcast Subscriptions, Profile/History/Prefs UI, Priority Queue etc.]* |
 
 ---
 
-## 2. High-Level User Flow
-1. **Landing (/)**
-   • Header: logo + "Search podcasts" box
-   • Top-right CTA: `Sign Up for Free` / `Login`
-2. **Search & Episode Select**
-   • Same for all personas
-   • Selecting an episode triggers:
-     `POST /api/jobs/new` → Backend kicks off AssemblyAI ingest
-     Immediate redirect to **Processing Screen**
-3. **Processing Screen**
-   • Shows job progress via websockets/polling
-   • Once analysis done → show **Adjustment UI**:
-     – table of speakers + detected WPM/volume
-     – sliders / inputs for desired WPM & volume
-   • Behaviour depends on persona:
-     ✦ Visitor: inputs disabled, play preview button only
-     ✦ Free user: inputs enabled; "Process full episode" button enabled **if daily quota available**
-     ✦ Paid: always enabled
-4. **Job Complete**
-   • Shows download link / RSS path
-5. **Profile (/profile)**
-   • Tabs: `History`, `Subscriptions`, `Preferences`, `Billing`
-   • Logout button
+## 2. High-Level User Flow (Gating Focus)
+*(Largely unchanged from previous version, highlights gating checks)*
+1. **Landing (/):** Auth CTAs present.
+2. **Search & Episode Select:** Unrestricted.
+3. **Processing Screen:**
+   • Shows progress.
+   • **Adjustment UI** appears.
+   • Behaviour gated by Auth & Subscription Status:
+     ✦ Visitor: Preview only.
+     ✦ Free: Inputs enabled, "Process" button active only if quota OK.
+     ✦ Paid: Inputs enabled, "Process" button always active (shows "Unlimited").
+4. **Job Complete:** Download link shown only if processing was allowed (Free w/ quota or Paid).
 
 ---
 
-## 3. Feature Gating Logic
-```
-if (!auth)                  => role = VISITOR
-else if (subscriptionActive)=> role = PAID
-else                        => role = FREE
-```
-Quota check for FREE:
-```
-processed_today < 1 ? allow : deny & show paywall
-```
-Middleware on protected endpoints `/api/jobs/adjust` & `/api/jobs/download` enforces above.
+## 3. Feature Gating & Quota Logic (Core Implementation)
+- **Identify User & Subscription Status:** Backend middleware uses `verifyAuth` (existing) and checks the `subscriptions` table (see Data Model) to determine if the user has an active subscription.
+  ```
+  user = await verifyAuth(req);
+  isActive = user ? await checkSubscriptionStatus(user.id) : false;
+  role = !user ? VISITOR : (isActive ? PAID : FREE);
+  ```
+- **Gating Adjustment/Download:** Endpoints (`/api/jobs/{id}/adjust`, `/api/jobs/{id}/download`) require auth.
+- **Quota Check (Backend - within `/adjust`):**
+    *   If `role === PAID`: **Skip** quota check, allow processing.
+    *   If `role === FREE`:
+        *   Check Redis/DB for `quota:free:<user_id>:<YYYY-MM-DD>`.
+        *   If `count < 1`: Allow processing, increment quota count, proceed.
+        *   If `count >= 1`: Return 403 Forbidden ("Daily free limit reached. Upgrade for unlimited processing.").
+- **Quota Tracking:** Redis key `quota:free:<user_id>:<YYYY-MM-DD>` with ~25h expiry (as before).
+- **Frontend Display:** Fetch user role/quota status. Conditionally enable/disable buttons, show relevant banners (`QuotaBanner`, `UpgradeBanner`).
 
 ---
 
-## 4. Data Model (PostgreSQL)
-- **users** (id, email, password_hash, created_at)
-- **subscriptions** (id, user_id, stripe_sub_id, status, current_period_end)
-- **jobs** (id UUID, user_id nullable, source_uri, status, created_at, completed_at, assembly_job_id, quota_flag)
-- **adjustments** (id, job_id, speaker_id, target_wpm, target_db)
-- **preferences** (user_id PK, default_wpm, default_db)
-- **listens** (id, user_id, job_id, played_at)
+## 4. Data Model (Focus on Gating Needs)
+- **Supabase Auth:** Provides `users` table implicitly.
+- **`subscriptions` (New Table - PostgreSQL/Supabase DB):**
+  `id` (PK), `user_id` (FK to auth.users), `stripe_customer_id`, `stripe_subscription_id`, `status` (e.g., 'active', 'canceled', 'past_due'), `current_period_end` (Timestamp), `created_at`, `updated_at`.
+- **Redis:** For ephemeral daily quota tracking.
+- *[Deferred: jobs, adjustments, preferences, listens tables unless strictly needed for MVP gating]*
 
 ---
 
 ## 5. Authentication & Authorisation
-- **Framework**: NextAuth for Bun (or custom JWT)
-- **Passwordless email magic-link** to lower friction
-- JWT stored in http-only cookie, 30 d expiry
-- `@authRequired` middleware injects `req.user`
+- **Provider:** Supabase Auth (existing).
+- **Verification:** Backend uses `verifyAuth` middleware (existing).
 
 ---
 
-## 6. Payments
-- **Provider**: Stripe Checkout + Billing Portal
-- Webhook handler `POST /api/webhooks/stripe` updates `subscriptions` table
-- Grace-period logic: allow paid features until `current_period_end + 3 d`
+## 6. Payments (Infrastructure Setup)
+- **Provider:** Stripe Checkout + Billing Portal.
+- **Goal:** Track subscription `status` accurately in our `subscriptions` table.
+- **Implementation:**
+    *   Set up Stripe products/prices.
+    *   Implement **Stripe Webhook Handler** (`POST /api/webhooks/stripe`): Listens for events like `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`. Updates the `status` and `current_period_end` in our `subscriptions` table accordingly.
+    *   **(Optional Now, Needed Later):** Add endpoints/logic to initiate Stripe Checkout sessions and redirect to the Billing Portal.
+- *[Deferred: UI for managing subscription/billing]*
 
 ---
 
-## 7. API Surface (Bun/Elysia)
+## 7. API Surface (Focus on Gating)
 | Method & Path | Auth | Purpose |
 |---------------|------|---------|
-| POST `/api/auth/signup` | none | passwordless request |
-| POST `/api/auth/callback` | none | completes login |
-| POST `/api/jobs/new` | optional | start analysis job |
-| GET  `/api/jobs/{id}` | any   | poll status |
-| POST `/api/jobs/{id}/adjust` | FREE/PAID only (quota check) | request modification |
-| GET  `/api/jobs/{id}/download` | FREE/PAID only (quota check) | download file |
-| GET  `/api/profile` | auth | user, quota, settings |
-| PUT  `/api/profile/preferences` | auth | save defaults |
-| POST `/api/subscribe/podcast` | PAID | create subscription |
-| GET  `/api/feed/{token}.rss` | PAID | personalised RSS |
+| *(Existing Auth Endpoints)* | ... | ... |
+| POST `/api/upload` *(or similar)* | Optional | Start analysis job |
+| GET  `/api/status/{id}` | Any | Poll status |
+| POST `/api/jobs/{id}/adjust` | **Required** | Request modification (**Add Role & Quota Check Logic**) |
+| GET  `/api/jobs/{id}/download` | **Required** | Download file (**Verify user processed this job**) |
+| GET  `/api/user/status` | Required | Get user role (Free/Paid) & quota status |
+| POST `/api/webhooks/stripe` | **None** (Verify signature) | Update subscription status from Stripe |
+| *(Deferred)* | ... | *Endpoints for checkout, billing portal, creating podcast subscriptions* |
 
 ---
 
 ## 8. Frontend (React/Bun)
-Components to add on top of earlier list:
-- `AuthModal` (signup / login)
-- `HeaderNav` (search + auth CTA)
-- `QuotaBanner`
-- `ProfilePage` (tabs)
-- `SubscriptionManager`
-
-State: use **TanStack Query** for API + React Context for auth.
+Component changes:
+- **Modify `SpeakerAdjuster.tsx`:** Check `user.role` (Free/Paid) and `user.quotaAvailable`. Conditionally enable/disable inputs & processing button. Show appropriate messaging ("Process (1 free credit remaining)", "Process (Unlimited)", "Upgrade to Process").
+- **Add `QuotaBanner`/`UpgradeBanner.tsx`:** Show based on role/quota.
+- **Modify `Header`:** Show auth state, potentially basic account status.
+- *[Deferred: ProfilePage, Subscription Management UI etc.]*
 
 ---
 
 ## 9. Background Jobs (BullMQ)
-- `analyzeAudioWorker` – unchanged
-- `adjustAudioWorker` – unchanged
-- `subscriptionWorker` (NEW): nightly cron that checks each paid user's podcast subscriptions, fetches new episodes, queues adjust jobs with user-defaults, emails / pushes when ready.
+- Existing workers handle core audio processing (Managed by other dev).
+- *[Deferred: subscriptionWorker]*
 
 ---
 
-## 10. Dev Milestones
-1. Auth skeleton (signup/login/logout)
-2. Free quota enforcement
-3. Stripe integration
-4. Profile & History pages
-5. Subscription RSS feed
-6. UI polish & onboarding
-7. Analytics + error reporting
+## 10. Dev Milestones (Revised Focus on Gating Infrastructure)
+1.  **Implement DB Table:** Create the `subscriptions` table in PostgreSQL (Supabase DB).
+2.  **Implement Stripe Webhook:** Set up the `/api/webhooks/stripe` endpoint to listen for subscription events and update the `subscriptions` table.
+3.  **Implement Role Check:** Modify backend middleware/logic to check `subscriptions` table status and determine user role (Free/Paid).
+4.  **Implement Quota Tracking & Enforcement:** Add Redis logic for daily free quota; update `/api/jobs/{id}/adjust` to enforce quota based on role.
+5.  **Implement Frontend Gating UI:** Modify frontend to fetch user role/quota, conditionally enable/disable features, and display appropriate banners/messages.
+6.  **Testing:** Thoroughly test webhook handling, role determination, quota logic, and frontend UI states.
+7.  *[Deferred: Building UI for paid features like subscription management]*
 
 ---
 
 ## 11. Security & Compliance Additions
-- Rate-limit anonymous search (e.g. 30/min)
-- reCAPTCHA on signup
-- DPA with AssemblyAI & Stripe
-- Delete user data on request (GDPR)
+- **Webhook Security:** Verify Stripe webhook signatures.
+- Rate-limit anonymous search.
+- Ensure compliance terms are clear about free tier limits.
 
 ---
 
 ## 12. Open Questions
-1. Will auto-processed subscription episodes count toward storage limits?
-2. What preview length (sec) gives enough taste without full value leak?
-3. Should free quota reset at midnight UTC or rolling 24 h?
-
-> **Next step:** implement DB schema & auth endpoints.
+*(Unchanged)*
+1.  Preview Implementation details?
+2.  Quota Reset timing (UTC vs. rolling)?
+3.  Confirm exact existing endpoint paths?
