@@ -6,82 +6,72 @@ I made this because listening to a podcast at 2x speed with Larry Summers was un
 
 ## Prerequisites
 
-Before running the application, ensure you have the following installed on your system:
+Before running the application, ensure you have the following installed and configured:
 
-*  **Assembly.ai:** Sign up for the free tier and get an api key
-*   **Bun:** Follow the installation instructions at [https://bun.sh/docs/installation](https://bun.sh/docs/installation)
-*   **ffmpeg:** Required for audio file manipulation.
-    *   Debian/Ubuntu: `sudo apt update && sudo apt install ffmpeg`
-    *   macOS (Homebrew): `brew install ffmpeg`
-    *   Other: Use your system's package manager or download from [https://ffmpeg.org/](https://ffmpeg.org/)
-*   **rubberband-cli:** Required for high-quality time-stretching.
-    *   Debian/Ubuntu: `sudo apt update && sudo apt install rubberband-cli`
-    *   macOS (Homebrew): `brew install rubberband`
-    *   Other: Use your system's package manager or find instructions at [https://breakfastquay.com/rubberband/](https://breakfastquay.com/rubberband/)
-*   **Redis:** Required for the task queue message broker and job state management. Ensure a Redis server is running and accessible.
-    *   Docker (recommended): `docker run -d -p 6379:6379 redis:latest`
-    *   Or install via package manager (e.g., `sudo apt install redis-server`).
+*   **Bun:** [https://bun.sh/docs/installation](https://bun.sh/docs/installation)
+*   **ffmpeg:** Required for audio file manipulation. (`sudo apt install ffmpeg` / `brew install ffmpeg`)
+*   **rubberband-cli:** Required for high-quality time-stretching. (`sudo apt install rubberband-cli` / `brew install rubberband`)
+*   **Redis:** Required for task queue & job state. Ensure a server is running (e.g., `docker run -d -p 6379:6379 redis:latest`).
+*   **Supabase Project:**
+    *   Create a project at [supabase.com](https://supabase.com).
+    *   Enable Authentication Providers: Go to Authentication -> Providers and enable **Email** (with Magic Link), **Google**, and **Twitter (X)**. Follow the instructions to add the required Client IDs/Secrets from Google Cloud Console / X Developer Portal. Ensure the Supabase Redirect URI is added to your Google/X app configurations.
+    *   Note your Supabase **Project URL** and **anon key** (from Project Settings -> API).
+*   **AssemblyAI API Key:** Sign up and get an API key for transcription/diarization.
+*   **Podcast Index API Key & Secret:** Sign up at [podcastindex.org](https://podcastindex.org/) and get an API Key and Secret for podcast searching.
 
 ## Setup
 
 1.  **Navigate to Project Directory:**
-    Ensure you are in the `PodPace` directory.
     ```bash
-    cd /path/to/your/dev/PodPace
+    cd /path/to/PodPace
     ```
-2.  **Install Backend Dependencies:**
+2.  **Install Dependencies:**
     ```bash
+    # Backend
     cd backend
     bun install
     cd ..
-    ```
-3.  **Install Frontend Dependencies:**
-    ```bash
-    cd PodPace/frontend
+    # Frontend
+    cd frontend
     bun install
     cd ..
     ```
-4.  **Configure Environment Variables:**
-    Create a `.env` file in the `backend` directory (`PodPace/backend/.env`) and add the following variables:
-
+3.  **Configure Frontend Environment (`frontend/.env`):**
+    Create a file named `.env` inside the `frontend` directory and add your Supabase credentials (prefixed with `VITE_`):
     ```dotenv
-    # Redis Connection
-    REDIS_HOST=127.0.0.1
-    REDIS_PORT=6379
-    # REDIS_PASSWORD= (optional)
-
-    # Cloud ASR/Diarization Provider (e.g., AssemblyAI)
-    ASSEMBLYAI_API_KEY=<YOUR_ASSEMBLYAI_API_KEY>
-
-    # PodcastIndex
-    PODCAST_INDEX_API_KEY=<YOUR_PODCASTINDEX_API_KEY>
-    PODCAST_INDEX_API_SECRET=<YOUR_PODCASTINDEX_API_SECRET>
-
-
-    # Define upload/output directories (optional, defaults are within backend/)
-    # UPLOAD_DIR=./uploads
-    # OUTPUT_DIR=./output
-
-    # API Port (Optional, defaults to 3000)
-    # API_PORT=3000
+    VITE_SUPABASE_URL=YOUR_SUPABASE_PROJECT_URL
+    VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
     ```
+    Replace the placeholders with your actual Supabase Project URL and anon key.
 
-    *Note: The frontend uses Vite's proxy. No frontend-specific environment variables are needed for the API connection by default.*
+4.  **Configure Backend Environment (`backend/set_env.sh`):**
+    *   A script `backend/set_env.sh` is provided to handle environment variables, especially those with special characters.
+    *   **Edit `backend/set_env.sh`:** Open this file and replace the placeholder values for `PODCAST_INDEX_API_KEY`, `PODCAST_INDEX_API_SECRET`, `ASSEMBLYAI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` with your actual credentials. Ensure the `PODCAST_INDEX_API_SECRET` value is enclosed in single quotes.
+    *   Optionally, uncomment and set `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` if they differ from the defaults (`127.0.0.1:6379`, no password).
 
 ## Running the Application
 
-This command uses `concurrently` to start the backend API, both backend workers, and the frontend development server all at once.
-
 1.  **Start Redis:** Ensure your Redis server is running.
-
-2.  **Start All Services:**
+2.  **Set Backend Environment Variables:** Open a terminal in the `backend` directory and run:
+    ```bash
+    source set_env.sh
+    ```
+    *(Note: You must run this `source` command in the same terminal session where you will start the backend in the next step.)*
+3.  **Start All Services:**
     From the root `PodPace/` directory, run:
     ```bash
     bun run dev
     ```
-    *   You will see interleaved logs from all four processes in your terminal.
-    *   The frontend development server typically runs on `http://localhost:5173`.
-    *   Open the URL provided for the frontend dev server in your web browser.
+    *   This uses `concurrently` to start the backend API, workers, and frontend dev server.
+    *   The frontend typically runs on `http://localhost:5173`.
+    *   Open this URL in your browser. You will be prompted to log in.
 
+## Authentication
 
-![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/jamesjmcconnell/PodPace?utm_source=oss&utm_medium=github&utm_campaign=jamesjmcconnell%2FPodPace&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
+The application now uses Supabase for authentication. Users can sign up or log in using:
+*   **Email Magic Link:** Enter email, click link in email.
+*   **Google Login:** Click button, authenticate with Google.
+*   **X (Twitter) Login:** Click button, authenticate with X.
+
+Protected backend API routes now require a valid authentication token obtained after login.
+

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
 // Import component files
 import FileUpload from './components/FileUpload'
@@ -9,6 +9,8 @@ import ErrorMessage from './components/ErrorMessage'
 import SearchBar from './components/SearchBar'
 import FeedList from './components/FeedList'
 import EpisodeList from './components/EpisodeList'
+import LoginPage from './pages/LoginPage'
+import { useAuth } from './context/AuthContext'
 
 // Import frontend interfaces from the correct relative path
 import type { SpeakerWPM, JobStatus, PodcastFeed, PodcastEpisode } from './interfaces'
@@ -21,14 +23,24 @@ interface SpeakerInfo {
   avg_wpm: number;
 }
 
+/**
+ * Main React component for the podcast processing application, managing authentication, podcast search, audio upload, episode browsing, job processing, and file download flows.
+ *
+ * Handles user authentication state, UI mode switching, podcast and episode selection, audio upload, job status tracking, speaker adjustment, and secure file downloads. Integrates with multiple child components and manages all relevant application state and error handling.
+ *
+ * @returns The rendered podcast processing application UI.
+ */
 function App() {
+  // Get auth state from context
+  const { session, user, loading: authLoading, signOut } = useAuth();
+
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus>('IDLE');
   const [speakerData, setSpeakerData] = useState<SpeakerInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false); // For initial upload indication
   const [outputFilename, setOutputFilename] = useState<string | null>(null); // To construct download URL
-  const [mode, setMode] = useState<'UPLOAD' | 'SEARCH'>('UPLOAD'); // just tossing this in for now incase we want to keep the upload workflow
+  const [mode, setMode] = useState<'UPLOAD' | 'SEARCH'>('SEARCH'); // Change default mode to SEARCH
   const [feeds, setFeeds] = useState<PodcastFeed[]>([]);
   const [selectedFeed, setSelectedFeed] = useState<PodcastFeed | null>(null);
   const [episodes, setEpisodes] = useState<PodcastEpisode[]>([]);
@@ -38,6 +50,18 @@ function App() {
   const [hasMoreEpisodes, setHasMoreEpisodes] = useState<boolean>(false);
   const [lastEpisodeTimestamp, setLastEpisodeTimestamp] = useState<number | null>(null);
   const EPISODE_PAGE_SIZE = 20; // How many episodes to fetch per batch
+  // New state for welcome message visibility
+  const [showWelcomeMessage, setShowWelcomeMessage] = useState<boolean>(true);
+
+  // Helper function to get auth headers
+  const getAuthHeaders = (): Record<string, string> => {
+    const token = session?.access_token;
+    if (!token) {
+      console.warn('No session token available for API request');
+      return {};
+    }
+    return { 'Authorization': `Bearer ${token}` };
+  };
 
   // --- Handler Functions (to be passed to components) ---
 
@@ -235,8 +259,16 @@ function App() {
         const apiUrl = '/api';
         const uploadRes = await fetch(`${apiUrl}/upload`, {
             method: 'POST',
+            headers: {
+               // No 'Content-Type' needed for FormData
+              ...getAuthHeaders() // Add Authorization header
+            },
             body: form,
         });
+        if (!uploadRes.ok) { // Check response status
+            const errorData = await uploadRes.json().catch(() => ({ error: `Upload failed (${uploadRes.status})` }));
+            throw new Error(errorData.error || `Upload failed (${uploadRes.status})`);
+        }
         const result = await uploadRes.json();
         handleUploadSuccess(result.job_id);
         setSelectedFeed(null);
@@ -258,8 +290,83 @@ function App() {
     // setFeeds([]);
   };
 
-    return (
+  // Handler to dismiss welcome message
+  const handleDismissWelcome = () => {
+    setShowWelcomeMessage(false);
+  };
+
+  // Add header to adjustment submit (inside SpeakerAdjuster component)
+  // We'll need to modify SpeakerAdjuster.tsx as well.
+
+  // Add header to status polling (inside JobProgress component)
+  // We'll need to modify JobProgress.tsx as well.
+
+  // Add header to download link (can't directly add to <a>, needs alternative)
+  // The download route is GET /api/download/:jobId
+  // Easiest way is to fetch the blob via JS and create an object URL
+
+  const handleDownloadClick = async () => {
+    if (!jobId || !outputFilename) return;
+    setIsLoading(true); // Use general loading state for download prep
+    setError(null);
+    try {
+      const apiUrl = `/api/download/${jobId}`;
+      const response = await fetch(apiUrl, {
+        headers: getAuthHeaders()
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: `Download failed (${response.status})` }));
+        throw new Error(errorData.error || `Download failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = outputFilename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch (e: any) {
+        setError(`Download failed: ${e.message}`);
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
+  // --- Auth State Handling ---
+  useEffect(() => {
+    // When user logs out, reset the application state
+    if (!authLoading && !session) {
+      console.log('[App] User logged out or initial state, resetting app state.');
+      handleReset(); // Reuse existing reset function
+    }
+  }, [session, authLoading]); // Depend on session and loading state
+
+  // Show loading indicator while checking auth state
+  if (authLoading) {
+    return <div style={{ padding: '2rem', textAlign: 'center' }}>Checking authentication...</div>;
+  }
+
+  // If no session, show Login Page
+  if (!session) {
+    return <LoginPage />;
+  }
+
+  // --- User is Logged In - Render Main App UI ---
+  return (
       <div className="App">
+        {/* Fixed Logout Button */}
+        <button onClick={signOut} style={styles.fixedLogoutButton}>
+          Logout
+        </button>
+
+        {/* Header - No longer contains welcome message */}
+        <header style={styles.header}>
+          {/* Can place other header items here if needed */}
+          <span>&nbsp;</span> {/* Placeholder or remove header if totally empty */}
+        </header>
+
         <ErrorMessage message={error} />
         {/* Loading indicators */}
         {isLoadingEpisodes && episodes.length === 0 && <p>Loading Episodes…</p>}
@@ -271,19 +378,31 @@ function App() {
             {/* --- Initial View (No Feed Selected) --- */}
             {!selectedFeed && (
               <>
-                <h1>PodPace – Speech Normalizer</h1>
+                {/* Title */}
+                <h1 style={styles.mainTitle}>
+                  Pod<span style={{ color: 'var(--accent)' }}>Pace</span>
+                </h1>
+
+                {/* Welcome Message (Keep this one) */}
+                {showWelcomeMessage && (
+                    <div style={styles.welcomeMessageContainer}>
+                        <span>Welcome, {user?.email || 'User'}!</span>
+                        <button onClick={handleDismissWelcome} style={styles.closeButton}>&times;</button>
+                    </div>
+                )}
+
                 <div className="mode-toggle">
-                  <button
-                    className={mode === 'UPLOAD' ? 'active-tab' : ''}
-                    onClick={() => setMode('UPLOAD')}
-                  >
-                    Upload Audio
-                  </button>
                   <button
                     className={mode === 'SEARCH' ? 'active-tab' : ''}
                     onClick={() => setMode('SEARCH')}
                   >
                     Search Podcasts
+                  </button>
+                  <button
+                    className={mode === 'UPLOAD' ? 'active-tab' : ''}
+                    onClick={() => setMode('UPLOAD')}
+                  >
+                    Upload Audio
                   </button>
                 </div>
 
@@ -340,6 +459,7 @@ function App() {
               jobId={jobId!}
               currentStatus={jobStatus}
               onStatusUpdate={handleStatusUpdate}
+              getAuthHeaders={getAuthHeaders}
             />
 
             {jobStatus === 'READY_FOR_INPUT' && speakerData.length > 0 && (
@@ -348,6 +468,7 @@ function App() {
                 speakerData={speakerData}
                 onSubmit={handleAdjustmentSubmit}
                 onError={handleUploadError}
+                getAuthHeaders={getAuthHeaders}
               />
             )}
 
@@ -359,7 +480,11 @@ function App() {
                     Finished: "{selectedEpisode.title}"
                   </h3>
                 )}
-                <DownloadArea jobId={jobId} outputFilename={outputFilename} />
+                <DownloadArea
+                  jobId={jobId}
+                  outputFilename={outputFilename}
+                  onDownload={handleDownloadClick}
+                />
               </>
             )}
 
@@ -371,5 +496,60 @@ function App() {
       </div>
     );
 }
+
+// Styles
+const styles: { [key: string]: React.CSSProperties } = {
+    header: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '0.5rem 1rem',
+        marginBottom: '1rem',
+        // background: 'var(--bg-secondary)', // Optional: Remove background if header is empty
+        minHeight: '30px' // Ensure header takes some space even if empty
+    },
+    fixedLogoutButton: {
+        position: 'fixed',
+        top: '1rem',
+        right: '1rem',
+        zIndex: 1000, // Ensure it's above other content
+        padding: '0.5rem 1rem',
+        borderRadius: '4px',
+        border: '1px solid var(--border)',
+        background: 'var(--bg-secondary-opaque, rgba(30, 30, 30, 0.8))', // Semi-transparent background
+        color: 'var(--text-primary)',
+        cursor: 'pointer',
+        boxShadow: '0 2px 5px rgba(0,0,0,0.2)' // Optional shadow for better visibility
+    },
+    welcomeMessageContainer: {
+        textAlign: 'center',
+        marginBottom: '1.5rem',
+        fontSize: '1.1rem',
+        padding: '0.8rem 1rem',
+        background: 'var(--bg-secondary)',
+        borderRadius: '6px',
+        border: '1px solid var(--border)',
+        position: 'relative', // Needed for absolute positioning of close button
+        display: 'flex', // Use flex to align text and button
+        justifyContent: 'center', // Center content horizontally
+        alignItems: 'center' // Center content vertically
+    },
+    closeButton: {
+        position: 'absolute',
+        top: '0.3rem',
+        right: '0.5rem',
+        background: 'none',
+        border: 'none',
+        color: 'var(--text-muted)',
+        fontSize: '1.5rem',
+        lineHeight: '1',
+        padding: '0.2rem 0.4rem',
+        cursor: 'pointer'
+    },
+    mainTitle: {
+      marginBottom: '2rem', // Add some space below title
+      fontWeight: 700 // Use heading font weight
+    }
+};
 
 export default App

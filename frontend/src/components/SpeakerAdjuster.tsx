@@ -8,13 +8,15 @@ interface SpeakerAdjusterProps {
   speakerData: SpeakerWPM[];
   onSubmit: () => void; // Callback when adjustment is successfully submitted
   onError: (message: string) => void; // Callback for errors
+  getAuthHeaders: () => Record<string, string>; // Add prop type
 }
 
 const SpeakerAdjuster: React.FC<SpeakerAdjusterProps> = ({
   jobId,
   speakerData,
   onSubmit,
-  onError
+  onError,
+  getAuthHeaders
 }) => {
   // State to hold the target WPM for each speaker ID
   const [targets, setTargets] = useState<Record<string, number | ''>>({});
@@ -45,45 +47,41 @@ const SpeakerAdjuster: React.FC<SpeakerAdjusterProps> = ({
     setIsSubmitting(true);
     onError(''); // Clear previous errors
 
-    // Format targets for the API
-    const apiTargets: TargetWPM[] = Object.entries(targets)
-      .filter(([_, wpm]) => wpm !== '' && wpm > 0) // Only include valid numbers
-      .map(([id, wpm]) => ({
-        id: id,
-        target_wpm: wpm as number // We know it's a number due to filter
-      }));
+    const targetsToSend: TargetWPM[] = Object.entries(targets)
+      .map(([id, target_wpm]) => ({ id, target_wpm: Number(target_wpm) }))
+      .filter(t => !isNaN(t.target_wpm)); // Ensure only valid numbers are sent
 
-    if (apiTargets.length === 0) {
+    if (targetsToSend.length === 0) {
         onError('Please set at least one valid target WPM.');
         setIsSubmitting(false);
         return;
     }
 
     try {
-      const apiUrl = '/api'; // Use relative path for Vite proxy
+      const apiUrl = '/api';
       console.log(`Submitting adjustments for job ${jobId} to: ${apiUrl}/adjust/${jobId}`);
-      console.log('Payload:', { targets: apiTargets });
+      console.log('Payload:', { targets: targetsToSend });
 
       const response = await fetch(`${apiUrl}/adjust/${jobId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
-        body: JSON.stringify({ targets: apiTargets }),
+        body: JSON.stringify({ targets: targetsToSend }),
       });
 
-      const result = await response.json();
-
       if (!response.ok) {
-        throw new Error(result.error || `Adjustment submission failed (${response.status})`);
+        const errorData = await response.json().catch(() => ({ error: `Adjustment submission failed (${response.status})` }));
+        throw new Error(errorData.error || `Adjustment submission failed (${response.status})`);
       }
 
-      console.log('Adjustment submission successful:', result);
+      console.log('Adjustment submission successful');
       onSubmit(); // Notify parent component
 
-    } catch (error: any) {
-      console.error('Adjustment submission error:', error);
-      onError(error.message || 'Failed to submit adjustments.');
+    } catch (err: any) {
+      console.error('Adjustment submission error:', err);
+      onError(err.message || 'Failed to submit adjustments.');
     } finally {
       setIsSubmitting(false);
     }
