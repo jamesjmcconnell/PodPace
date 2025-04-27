@@ -9,6 +9,9 @@ import { verifyAuth } from './middleware/auth'; // Import the auth middleware
 import { getUserRole, type UserRole } from './middleware/role';
 import { handleStripeWebhook } from './routes/webhooks'; // Import the handler
 import type { User } from '@supabase/supabase-js'; // Import the User type
+import { getJobInfo, getJobAnalysisData, updateJobStatus } from './utils/jobUtils'; // Assume helpers moved
+import { checkAndIncrementAnalysisQuota, checkAndIncrementAdjustmentQuota, getQuotaCount } from './utils/quotaUtils'; // Assume helpers moved
+import type { Segment } from './interfaces'; // Import Segment type
 
 
 console.log('Starting backend server...');
@@ -36,7 +39,7 @@ const ADJUST_QUEUE_NAME = 'audio-adjust';
 
 // --- Redis Connection ---
 console.log(`Connecting to Redis at ${REDIS_HOST}:${REDIS_PORT}...`);
-const redisConnection = new Redis({
+export const redisConnection = new Redis({
     host: REDIS_HOST,
     port: REDIS_PORT,
     password: REDIS_PASSWORD,
@@ -75,52 +78,18 @@ const adjustAudioQueue = new Queue(ADJUST_QUEUE_NAME, { connection: redisConnect
 
 console.log(`Initialized BullMQ queues: ${ANALYZE_QUEUE_NAME}, ${ADJUST_QUEUE_NAME}`);
 
-// --- Job Status Tracking (using Redis Hashes) ---
-const getJobStatusKey = (jobId: string) => `job:${jobId}:status`;
-const getJobDataKey = (jobId: string) => `job:${jobId}:data`;
+// --- Job Status Tracking (Now in jobUtils) ---
+// Definitions removed
 
-async function updateJobStatus(jobId: string, status: string, data?: Record<string, any>) {
-    console.log(`Updating job ${jobId} status to ${status}`);
-    try {
-        const multi = redisConnection.multi();
-        multi.hset(getJobStatusKey(jobId), 'status', status, 'updatedAt', String(Date.now()));
-        if (data) {
-            // Store additional data; ensure values are strings or stringifiable
-            const dataToStore = Object.entries(data).reduce((acc, [key, value]) => {
-                acc[key] = typeof value === 'string' ? value : JSON.stringify(value);
-                return acc;
-            }, {} as Record<string, string>);
-            multi.hset(getJobDataKey(jobId), dataToStore);
-        }
-        await multi.exec();
-    } catch (error) {
-        console.error(`Failed to update status for job ${jobId}:`, error);
-    }
-}
+// --- Quota Helpers (Now in quotaUtils) ---
+// REMOVE OLD DEFINITIONS:
+/*
+async function getQuotaCount(userId: string, quotaType: 'analysis' | 'adjust'): Promise<number> { ... }
+async function checkAndIncrementAnalysisQuota(userId: string): Promise<boolean> { ... }
+async function checkAndIncrementAdjustmentQuota(userId: string): Promise<boolean> { ... }
+*/
 
-async function getJobInfo(jobId: string): Promise<Record<string, string> | null> {
-    try {
-        const statusData = await redisConnection.hgetall(getJobStatusKey(jobId));
-        const jobData = await redisConnection.hgetall(getJobDataKey(jobId));
-        if (!statusData || Object.keys(statusData).length === 0) {
-            return null; // Job not found
-        }
-        // Combine status and data; NOTE: all values from hgetall are strings
-        return { ...statusData, ...jobData };
-    } catch (error) {
-        console.error(`Failed to get info for job ${jobId}:`, error);
-        return null;
-    }
-}
-
-/**
- * Creates a JSON HTTP response with appropriate CORS headers.
- *
- * @param data - The data to serialize as JSON in the response body.
- * @param status - The HTTP status code to use for the response. Defaults to 200.
- * @param headers - Optional additional headers to include in the response.
- * @returns A Response object containing the JSON-encoded data and CORS headers.
- */
+// --- Response Helpers ---
 function jsonResponse(data: any, status: number = 200, headers?: Record<string, string>) {
     return new Response(JSON.stringify(data), {
         status: status,
@@ -149,70 +118,6 @@ export function errorResponse(message: string, status: number = 500) {
 // Define an interface for the expected request body structure
 interface AdjustRequestBody {
     targets: { id: string; target_wpm: number }[];
-}
-
-// --- Quota Helpers ---
-
-// Checks and increments the daily ANALYSIS quota (Limit: 3)
-async function checkAndIncrementAnalysisQuota(userId: string): Promise<boolean> {
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
-    const key = `quota:analysis:free:${userId}:${today}`;
-    const limit = 3; // Define the limit
-    try {
-        const currentCount = await redisConnection.incr(key);
-        if (currentCount === 1) {
-            // seconds until next midnight UTC
-            const now = new Date();
-            const nextMidnight = new Date(Date.UTC(
-                now.getUTCFullYear(),
-                now.getUTCMonth(),
-                now.getUTCDate() + 1, 
-                0, 0, 0, 0
-            ));
-            const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
-            await redisConnection.expire(key, ttlSeconds);
-        }
-        const allowed = currentCount <= limit;
-        console.log(
-            `[QuotaCheck Analysis] User: ${userId}, Date: ${today}, ` +
-            `Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`
-        );
-        return allowed;
-    } catch (error) {
-        console.error(`[QuotaCheck Analysis] Redis error for user ${userId}:`, error);
-        return false; // Fail closed
-    }
-}
-
-// Renamed for clarity: Checks and increments the daily ADJUSTMENT quota (Limit: 1)
-async function checkAndIncrementAdjustmentQuota(userId: string): Promise<boolean> {
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
-    const key = `quota:adjust:free:${userId}:${today}`; // New key pattern
-    const limit = 1; // Define the limit
-    try {
-        const currentCount = await redisConnection.incr(key);
-        if (currentCount === 1) {
-            // seconds until next midnight UTC
-            const now = new Date();
-            const nextMidnight = new Date(Date.UTC(
-                now.getUTCFullYear(),
-                now.getUTCMonth(),
-                now.getUTCDate() + 1, 
-                0, 0, 0, 0
-            ));
-            const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
-            await redisConnection.expire(key, ttlSeconds);
-        }
-        const allowed = currentCount <= limit;
-        console.log(
-            `[QuotaCheck Adjust] User: ${userId}, Date: ${today}, ` +
-            `Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`
-        );
-        return allowed;
-    } catch (error) {
-        console.error(`[QuotaCheck Adjust] Redis error for user ${userId}:`, error);
-        return false; // Fail closed
-    }
 }
 
 async function handleAdjust(req: Request, jobId: string): Promise<Response> {
@@ -365,17 +270,37 @@ async function handleStatus(req: Request, jobId: string): Promise<Response> {
         return errorResponse('Job not found', 404);
     }
 
-    // Parse specific fields known to be JSON if needed (adjust based on worker output)
+    // --- Add Role & Quota Info for Authenticated Requests ---
+    let responseData: Record<string, any> = { job_id: jobId, ...jobInfo };
+    const user = await verifyAuth(req); // Check auth status silently
+
+    if (user) {
+        const role = await getUserRole(user);
+        responseData.role = role;
+
+        if (role === 'FREE') {
+            const analysisQuotaUsed = await getQuotaCount(user.id, 'analysis');
+            const adjustmentQuotaUsed = await getQuotaCount(user.id, 'adjust');
+            responseData.quota = {
+                analysis: { limit: 3, used: analysisQuotaUsed, remaining: Math.max(0, 3 - analysisQuotaUsed) },
+                adjustment: { limit: 1, used: adjustmentQuotaUsed, remaining: Math.max(0, 1 - adjustmentQuotaUsed) }
+            };
+        } else if (role === 'PAID') {
+             responseData.quota = { /* Indicate unlimited or omit */ };
+        }
+    }
+    // else: If no user, role/quota info is omitted
+    // -----------------------------------------------------
+
+    // Parse specific fields known to be JSON if needed
     try {
-        if (jobInfo.speakers) jobInfo.speakers = JSON.parse(jobInfo.speakers);
-        if (jobInfo.targets) jobInfo.targets = JSON.parse(jobInfo.targets);
-        // Add parsing for other JSON fields as needed
+        if (responseData.speakers) responseData.speakers = JSON.parse(responseData.speakers);
+        if (responseData.targets) responseData.targets = JSON.parse(responseData.targets);
     } catch (parseError: any) {
         console.warn(`Could not parse JSON field for job ${jobId}: ${parseError.message}`);
-        // Decide how to handle: return raw strings or indicate an issue
     }
 
-    return jsonResponse({ job_id: jobId, ...jobInfo });
+    return jsonResponse(responseData);
 }
 
 async function handleDownload(req: Request, jobId: string): Promise<Response> {
@@ -477,6 +402,84 @@ async function handleAudioProxy(req: Request): Promise<Response> {
     }
 }
 
+// --- Preview Handler ---
+async function handlePreview(req: Request, jobId: string, speakerId: string): Promise<Response> {
+    console.log(`[Preview] Request for job ${jobId}, speaker ${speakerId}`);
+    const MAX_PREVIEW_SEC = 10;
+
+    try {
+        // 1. Get Job Info (especially original file path)
+        const jobInfo = await getJobInfo(jobId);
+        if (!jobInfo || !jobInfo.filePath) {
+            return errorResponse('Job info or file path not found', 404);
+        }
+        const originalFilePath = jobInfo.filePath;
+
+        // 2. Get Analysis Data (segments)
+        const analysisData = await getJobAnalysisData(jobId);
+        if (!analysisData || !analysisData.segments || analysisData.segments.length === 0) {
+            return errorResponse('Analysis data (segments) not found for job', 404);
+        }
+
+        // 3. Find first relevant segment for the speaker
+        // Assuming speakerId format is like 'Speaker_X'
+        const targetSpeakerLabel = speakerId; // Use directly if format matches
+        const firstSegment = analysisData.segments.find((seg: Segment) => seg.speaker === targetSpeakerLabel);
+
+        if (!firstSegment) {
+            return errorResponse(`No segments found for speaker ${speakerId}`, 404);
+        }
+
+        // 4. Extract audio using ffmpeg
+        const startTimeSec = firstSegment.start / 1000;
+        // Ensure we don't try to extract more than the segment or max preview length
+        const segmentDurationSec = (firstSegment.end - firstSegment.start) / 1000;
+        const extractDurationSec = Math.min(MAX_PREVIEW_SEC, segmentDurationSec);
+
+        if (extractDurationSec <= 0) {
+             return errorResponse('Segment duration too short for preview', 400);
+        }
+
+        console.log(`[Preview] Extracting ${extractDurationSec.toFixed(2)}s starting at ${startTimeSec.toFixed(2)}s from ${originalFilePath}`);
+
+        // Use Bun Shell for ffmpeg. Output directly to stdout, pipe to Response.
+        // Force output format to mp3 for browser compatibility
+        const ffmpeg = Bun.spawn([
+            'ffmpeg',
+            '-loglevel', 'error',
+            '-i', originalFilePath,
+            '-ss', String(startTimeSec),
+            '-t', String(extractDurationSec),
+            '-vn', // No video
+            '-f', 'mp3', // Output format
+            '-acodec', 'libmp3lame',
+            '-q:a', '5', // VBR quality (~130kbps)
+            'pipe:1' // Output to stdout
+        ]);
+
+        // Check for immediate errors (like file not found)
+        const stderr = await new Response(ffmpeg.stderr).text();
+        if (stderr) {
+            console.error(`[Preview] ffmpeg stderr for job ${jobId}, speaker ${speakerId}: ${stderr}`);
+            // Don't throw if it's just warnings, but maybe check exit code later?
+        }
+
+        // Stream the stdout (audio data) back
+        return new Response(ffmpeg.stdout, {
+            status: 200,
+            headers: {
+                'Content-Type': 'audio/mpeg',
+                'Accept-Ranges': 'bytes', // Optional, useful for seeking if player supports it
+                 'Access-Control-Allow-Origin': '*' // Allow frontend origin
+            }
+        });
+
+    } catch (error: any) {
+        console.error(`[Preview] Error generating preview for job ${jobId}, speaker ${speakerId}:`, error);
+        return errorResponse(`Failed to generate preview: ${error.message}`, 500);
+    }
+}
+
 // --- Bun HTTP Server --- //
 const serverOptions: ServeOptions = {
     port: API_PORT,
@@ -540,15 +543,27 @@ const serverOptions: ServeOptions = {
             return handleUpload(req, user, role);
         }
 
-        // For other protected routes, verify auth if not already done implicitly by upload check
+        // Re-check user for subsequent protected routes
         if (!user) {
             // This check might be redundant if all routes below /upload are covered,
             // but keep for safety unless explicitly removing other routes from protection.
             return errorResponse('Unauthorized: Invalid or missing token', 401);
         }
-        // Determine role if not already determined for upload
         const role = await getUserRole(user);
         console.log(`[Auth] user ${user.id} role = ${role}`);
+
+        // --- Preview Route (Requires Auth, No Quota) ---
+        const previewMatch = url.pathname.match(/^\/api\/jobs\/(.+)\/preview\/(.+)$/);
+        if (previewMatch && req.method === 'GET') {
+            const [, jobId, speakerId] = previewMatch;
+            if (jobId && speakerId) { // Ensure capture groups are not undefined
+                console.log(`[Route] Match preview: job=${jobId}, speaker=${speakerId}`);
+                return handlePreview(req, jobId, speakerId);
+            } else {
+                 console.warn('[Route] Preview route matched but failed to capture IDs', url.pathname);
+                 return errorResponse('Invalid preview URL format', 400);
+            }
+        }
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'status' && pathSegments[2] && req.method === 'GET') {
             const jobId = pathSegments[2];

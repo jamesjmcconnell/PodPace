@@ -12,9 +12,10 @@ import EpisodeList from './components/EpisodeList'
 import LoginPage from './pages/LoginPage'
 import AudioPlayer from './components/AudioPlayer'
 import { useAuth } from './context/AuthContext'
+import Banner from './components/Banner'
 
 // Import frontend interfaces from the correct relative path
-import type { SpeakerWPM, JobStatus, PodcastFeed, PodcastEpisode } from './interfaces'
+import type { SpeakerWPM, JobStatus, PodcastFeed, PodcastEpisode, UserRole, QuotaInfo } from './interfaces'
 
 
 
@@ -54,6 +55,11 @@ function App() {
   // New state for welcome message visibility
   const [showWelcomeMessage, setShowWelcomeMessage] = useState<boolean>(true);
 
+  // --- NEW State for Role and Quota ---
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [quotaStatus, setQuotaStatus] = useState<QuotaInfo | null>(null);
+  // ------------------------------------
+
   // Helper function to get auth headers
   const getAuthHeaders = (): Record<string, string> => {
     const token = session?.access_token;
@@ -85,30 +91,44 @@ function App() {
   };
 
   // Example: To be called by JobProgress when status updates
-  const handleStatusUpdate = (statusUpdate: any) => { // Type this based on actual API response
-    setJobStatus(statusUpdate.status as JobStatus); // Assuming API returns status field
+  const handleStatusUpdate = (statusUpdate: any) => {
+    console.log('[App] Received status update:', statusUpdate);
+    setJobStatus(statusUpdate.status as JobStatus);
+
+    // --- Update Role and Quota State ---
+    if (statusUpdate.role) {
+        setUserRole(statusUpdate.role as UserRole);
+    }
+    if (statusUpdate.quota) {
+        setQuotaStatus(statusUpdate.quota as QuotaInfo);
+    }
+    // Clear role/quota if they disappear from status (e.g., user logs out mid-poll?)
+    if (!statusUpdate.role) setUserRole(null);
+    if (!statusUpdate.quota) setQuotaStatus(null);
+    // ------------------------------------
+
     if (statusUpdate.status === 'READY_FOR_INPUT' && statusUpdate.speakers) {
-      // Attempt to parse speakers if it's a string, otherwise use directly
-      try {
-          const speakers = typeof statusUpdate.speakers === 'string'
-            ? JSON.parse(statusUpdate.speakers)
-            : statusUpdate.speakers;
-          if (Array.isArray(speakers)) {
-             setSpeakerData(speakers);
-          }
-      } catch (e) {
-          console.error("Failed to parse speaker data:", e);
-          setError('Failed to parse speaker data from backend.');
-          setJobStatus('FAILED');
-      }
+       // Attempt to parse speakers if it's a string, otherwise use directly
+       try {
+           const speakers = typeof statusUpdate.speakers === 'string'
+             ? JSON.parse(statusUpdate.speakers)
+             : statusUpdate.speakers;
+           if (Array.isArray(speakers)) {
+              setSpeakerData(speakers);
+           }
+       } catch (e) {
+           console.error("Failed to parse speaker data:", e);
+           setError('Failed to parse speaker data from backend.');
+           setJobStatus('FAILED');
+       }
     }
     if (statusUpdate.status === 'FAILED' && statusUpdate.error) {
-      setError(statusUpdate.error);
+        setError(statusUpdate.error);
     }
-     if (statusUpdate.status === 'COMPLETE' && statusUpdate.outputFilePath) {
+    if (statusUpdate.status === 'COMPLETE' && statusUpdate.outputFilePath) {
        // Extract filename for download link construction
        setOutputFilename(statusUpdate.outputFilePath.split('/').pop() || null);
-     }
+    }
   };
 
   // Handler for when adjustment is submitted
@@ -359,12 +379,14 @@ function App() {
 
   // --- Auth State Handling ---
   useEffect(() => {
-    // When user logs out, reset the application state
+    // Reset app state on logout, including role/quota
     if (!authLoading && !session) {
-      console.log('[App] User logged out or initial state, resetting app state.');
-      handleReset(); // Reuse existing reset function
+        console.log('[App] User logged out, resetting app state.');
+        handleReset();
+        setUserRole(null); // Clear role on logout
+        setQuotaStatus(null); // Clear quota on logout
     }
-  }, [session, authLoading]); // Depend on session and loading state
+  }, [session, authLoading]);
 
   // Show loading indicator while checking auth state
   if (authLoading) {
@@ -391,6 +413,26 @@ function App() {
         </header>
 
         <ErrorMessage message={error} />
+        {/* --- Quota/Status Banners --- */}
+        {userRole === 'FREE' && quotaStatus && (
+            <>
+                {quotaStatus.analysis.remaining <= 1 && quotaStatus.analysis.remaining > 0 && (
+                     <Banner
+                        message={`Analysis quota low: ${quotaStatus.analysis.remaining} remaining today.`}
+                        type="warning"
+                     />
+                )}
+                 {quotaStatus.analysis.remaining <= 0 && (
+                     <Banner
+                        message={`Daily analysis limit (${quotaStatus.analysis.limit}/day) reached. Upgrade for unlimited.`}
+                        type="error"
+                     />
+                )}
+                {/* Adjustment quota message is handled inside SpeakerAdjuster for now */}
+            </>
+        )}
+        {/* ------------------------- */}
+
         {/* Loading indicators */}
         {isLoadingEpisodes && episodes.length === 0 && <p>Loading Episodes…</p>}
         {isLoading && jobStatus !== 'FAILED' && episodes.length === 0 && !isLoadingEpisodes && <p>Uploading…</p>}
@@ -412,6 +454,11 @@ function App() {
                         <span>Welcome, {user?.email || 'User'}!</span>
                         <button onClick={handleDismissWelcome} style={styles.closeButton}>&times;</button>
                     </div>
+                )}
+
+                {/* Analysis Quota Check for Episode Selection */}
+                {(userRole === 'FREE' && quotaStatus?.analysis.remaining === 0) && (
+                    <p style={{color: 'orange'}}>Daily analysis limit reached.</p>
                 )}
 
                 <div className="mode-toggle">
@@ -458,7 +505,7 @@ function App() {
                 </div>
                 <EpisodeList
                   episodes={episodes}
-                  onSelectEpisode={handleEpisodeSelect}
+                  onSelectEpisode={ (userRole === 'FREE' && (quotaStatus?.analysis?.remaining ?? 0) <= 0) ? () => {} : handleEpisodeSelect }
                   isLoading={isLoadingEpisodes}
                   hasMore={hasMoreEpisodes}
                   onLoadMore={loadMoreEpisodes}
@@ -492,6 +539,8 @@ function App() {
                 onSubmit={handleAdjustmentSubmit}
                 onError={handleUploadError}
                 getAuthHeaders={getAuthHeaders}
+                userRole={userRole}
+                quotaStatus={quotaStatus}
               />
             )}
 
@@ -508,7 +557,11 @@ function App() {
                   outputFilename={outputFilename}
                   onDownload={handleDownloadClick}
                 />
-                <AudioPlayer src={`/api/download/${jobId}`} />
+                <AudioPlayer
+                  jobId={jobId}
+                  getAuthHeaders={getAuthHeaders}
+                  className="audio-player-complete" // Add a class for potential styling
+                />
               </>
             )}
 

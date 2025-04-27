@@ -14,11 +14,28 @@ export interface TargetWPM {
     target_wpm: number;
 }
 
+/** Represents the user's role based on authentication and subscription */
+export type UserRole = 'VISITOR' | 'FREE' | 'PAID';
+
+/** Structure for quota information received from the backend */
+export interface QuotaDetail {
+    limit: number;
+    used: number;
+    remaining: number;
+}
+
+/** Full quota status object */
+export interface QuotaInfo {
+    analysis: QuotaDetail;
+    adjustment: QuotaDetail;
+}
+
 // Type for tracking job status in the frontend
 export type JobStatus =
-  | 'IDLE'
-  | 'UPLOADING'
-  | 'PROCESSING_UPLOAD_CLOUD' // Or generic PROCESSING if preferred
+  | 'IDLE' // Frontend only initial state
+  | 'PENDING' // Waiting in analyze queue
+  | 'UPLOADING' // Frontend only upload state
+  | 'PROCESSING_UPLOAD_CLOUD'
   | 'PROCESSING_CLOUD_ANALYSIS'
   | 'PROCESSING_WPM_CALCULATION'
   | 'READY_FOR_INPUT'

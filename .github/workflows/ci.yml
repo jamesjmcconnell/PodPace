@@ -1,0 +1,67 @@
+name: PodPace CI
+
+on:
+  push:
+    branches: [ main ] # Adjust branches as needed
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest # Or pin to a specific version
+
+    # Assuming pnpm might be used later for workspaces, cache it
+    # If only using bun, this cache setup might differ slightly
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v3
+      with:
+        version: 8 # Or your pnpm version
+
+    - name: Get pnpm store directory
+      id: pnpm-cache
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    # Install dependencies (adjust if using workspaces/monorepo)
+    # This assumes dependencies are managed at the root or individually
+    # TODO: Adapt this if using pnpm workspaces
+    - name: Install Backend Dependencies
+      run: cd backend && bun install --frozen-lockfile
+    - name: Install Frontend Dependencies
+      run: cd frontend && bun install --frozen-lockfile
+
+    - name: Lint Check
+      # Run lint from root, assuming eslint config handles subdirs
+      # Or run individually: cd backend && bun run lint && cd ../frontend && bun run lint
+      run: bunx eslint . --max-warnings=0
+      # If eslint isn't installed globally via bunx, install it first or use package script
+      # run: cd backend && bun run lint
+
+    - name: Run Backend Tests
+      run: cd backend && bun test --coverage
+      # Add frontend tests if/when available
+      # run: cd frontend && bun test --coverage
+
+    - name: Verify Docker Build
+      # Assumes Dockerfile is at the root. Adjust path if needed.
+      run: docker build -t podpace:ci -f Dockerfile .
+      # Create a dummy Dockerfile if it doesn't exist yet to avoid failure
+      # Or comment this step out until Dockerfile is created in Phase 7

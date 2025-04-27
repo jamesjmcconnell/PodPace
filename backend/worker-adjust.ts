@@ -88,6 +88,58 @@ async function getJobAnalysisData(jobId: string): Promise<{ speakers: SpeakerWPM
 async function processAudioAdjustment(jobData: AdjustJobData): Promise<string> {
     const { jobId, filePath, targets } = jobData;
     const tempDir = path.join(TEMP_DIR_BASE, jobId); // Job-specific temp directory
+    console.log(`[Adjust Job ${jobId}] Starting adjustment process for ${filePath}`);
+
+    // 1. Get calculated WPMs and Diarization Segments
+    await updateJobStatus(jobId, 'PROCESSING_ADJUSTMENT');
+    const analysisData = await getJobAnalysisData(jobId);
+    if (!analysisData) {
+        throw new Error('Failed to retrieve necessary analysis data from Redis.');
+    }
+    const { speakers: originalSpeakerWPMs, segments } = analysisData;
+
+    // Create maps for quick lookup
+    const originalWpmMap = new Map(originalSpeakerWPMs.map(s => [s.id, s.avg_wpm]));
+    const targetWpmMap = new Map(targets.map(t => [t.id, t.target_wpm]));
+
+    // --- Optimization Check ---
+    let needsProcessing = false;
+    if (targets.length > 0) { // Only check if targets were actually provided
+        for (const target of targets) {
+            const originalWpm = originalWpmMap.get(target.id);
+            // Check if target WPM is significantly different from original (e.g., > 1 WPM difference)
+            // Also check if originalWpm exists, otherwise assume change is needed if target was set
+            if (originalWpm === undefined || Math.abs(target.target_wpm - originalWpm) > 1.0) {
+                console.log(`[Adjust Job ${jobId}] Change detected for ${target.id}: Target=${target.target_wpm}, Original=${originalWpm}`);
+                needsProcessing = true;
+                break; // Found a change, no need to check further
+            }
+        }
+    } else {
+        // If no targets were sent, no processing is needed.
+        needsProcessing = false;
+    }
+
+    // --- Conditional Processing ---
+    if (!needsProcessing) {
+        console.log(`[Adjust Job ${jobId}] No significant WPM changes detected. Skipping segmentation/stretching.`);
+        // Determine output path based on original filename
+        const outputFilename = `${path.parse(jobData.originalFilename).name}_normalized.mp3`;
+        const finalOutputPath = path.join(OUTPUT_DIR, outputFilename);
+
+        try {
+            // Simply copy the original file to the output location
+            console.log(`[Adjust Job ${jobId}] Copying original file ${filePath} to ${finalOutputPath}`);
+            await fs.copyFile(filePath, finalOutputPath);
+            return finalOutputPath; // Return the path to the copied file
+        } catch(copyError: any) {
+             console.error(`[Adjust Job ${jobId}] Failed to copy original file:`, copyError);
+             throw new Error(`Failed to copy original file for unchanged job: ${copyError.message}`);
+        }
+    }
+
+    // --- Proceed with Full Processing (Segmentation, Stretching, Concatenation) ---
+    console.log(`[Adjust Job ${jobId}] Significant changes detected or no targets provided, proceeding with full processing.`);
     await fs.mkdir(tempDir, { recursive: true });
     console.log(`[Adjust Job ${jobId}] Created temp directory: ${tempDir}`);
 
@@ -95,18 +147,6 @@ async function processAudioAdjustment(jobData: AdjustJobData): Promise<string> {
     const concatFilePath = path.join(tempDir, 'concat_list.txt');
 
     try {
-        // 1. Get calculated WPMs and Diarization Segments
-        await updateJobStatus(jobId, 'PROCESSING_ADJUSTMENT');
-        const analysisData = await getJobAnalysisData(jobId);
-        if (!analysisData) {
-            throw new Error('Failed to retrieve necessary analysis data from Redis.');
-        }
-        const { speakers: originalSpeakerWPMs, segments } = analysisData;
-
-        // Create a map for quick lookup
-        const originalWpmMap = new Map(originalSpeakerWPMs.map(s => [s.id, s.avg_wpm]));
-        const targetWpmMap = new Map(targets.map(t => [t.id, t.target_wpm]));
-
         // 2. Process each segment
         console.log(`[Adjust Job ${jobId}] Processing ${segments.length} segments...`);
         for (let i = 0; i < segments.length; i++) {
