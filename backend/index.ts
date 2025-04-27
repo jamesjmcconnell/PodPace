@@ -161,10 +161,22 @@ async function checkAndIncrementAnalysisQuota(userId: string): Promise<boolean> 
     try {
         const currentCount = await redisConnection.incr(key);
         if (currentCount === 1) {
-            await redisConnection.expire(key, 60 * 60 * 25); // ~25 hours
+            // seconds until next midnight UTC
+            const now = new Date();
+            const nextMidnight = new Date(Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate() + 1, 
+                0, 0, 0, 0
+            ));
+            const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
+            await redisConnection.expire(key, ttlSeconds);
         }
         const allowed = currentCount <= limit;
-        console.log(`[QuotaCheck Analysis] User: ${userId}, Date: ${today}, Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`);
+        console.log(
+            `[QuotaCheck Analysis] User: ${userId}, Date: ${today}, ` +
+            `Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`
+        );
         return allowed;
     } catch (error) {
         console.error(`[QuotaCheck Analysis] Redis error for user ${userId}:`, error);
@@ -180,10 +192,22 @@ async function checkAndIncrementAdjustmentQuota(userId: string): Promise<boolean
     try {
         const currentCount = await redisConnection.incr(key);
         if (currentCount === 1) {
-            await redisConnection.expire(key, 60 * 60 * 25);
+            // seconds until next midnight UTC
+            const now = new Date();
+            const nextMidnight = new Date(Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate() + 1, 
+                0, 0, 0, 0
+            ));
+            const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
+            await redisConnection.expire(key, ttlSeconds);
         }
         const allowed = currentCount <= limit;
-        console.log(`[QuotaCheck Adjust] User: ${userId}, Date: ${today}, Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`);
+        console.log(
+            `[QuotaCheck Adjust] User: ${userId}, Date: ${today}, ` +
+            `Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`
+        );
         return allowed;
     } catch (error) {
         console.error(`[QuotaCheck Adjust] Redis error for user ${userId}:`, error);
