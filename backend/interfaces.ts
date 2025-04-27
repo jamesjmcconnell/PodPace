@@ -63,3 +63,11 @@ export interface AssemblyAITranscriptResponse {
     utterances?: Utterance[];
     text?: string;
 }
+
+// Interface for the POST /api/adjust/:jobId request body
+export interface AdjustRequestBody {
+    targets: { id: string; target_wpm: number }[];
+}
+
+// Represents the user's role based on authentication and subscription
+export type UserRole = 'VISITOR' | 'FREE' | 'PAID';
