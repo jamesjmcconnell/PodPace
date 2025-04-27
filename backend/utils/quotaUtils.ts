@@ -1,9 +1,4 @@
-import Redis from 'ioredis';
-
-// --- Redis Connection (Assume redisConnection is initialized elsewhere and passed or imported) ---
-// Example: import { redisConnection } from '../index';
-// For now, declare it to satisfy the linter locally if not importing
-declare const redisConnection: Redis;
+import { redis } from '../src/lib/redis';
 
 // --- Quota Helpers ---
 
@@ -12,7 +7,7 @@ export async function getQuotaCount(userId: string, quotaType: 'analysis' | 'adj
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
     const key = `quota:${quotaType}:free:${userId}:${today}`;
     try {
-        const countStr = await redisConnection.get(key);
+        const countStr = await redis.get(key);
         return countStr ? parseInt(countStr, 10) : 0;
     } catch (error) {
         console.error(`[QuotaGet] Redis error for user ${userId} type ${quotaType}:`, error);
@@ -26,13 +21,13 @@ export async function checkAndIncrementAnalysisQuota(userId: string): Promise<bo
     const key = `quota:analysis:free:${userId}:${today}`;
     const limit = 3; // Define the limit
     try {
-        const currentCount = await redisConnection.incr(key);
+        const currentCount = await redis.incr(key);
         if (currentCount === 1) {
              // Set expiry based on seconds until next midnight UTC
             const now = new Date();
             const nextMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
             const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
-            await redisConnection.expire(key, ttlSeconds);
+            await redis.expire(key, ttlSeconds);
         }
         const allowed = currentCount <= limit;
         console.log(
@@ -52,13 +47,13 @@ export async function checkAndIncrementAdjustmentQuota(userId: string): Promise<
     const key = `quota:adjust:free:${userId}:${today}`; // New key pattern
     const limit = 1; // Define the limit
     try {
-        const currentCount = await redisConnection.incr(key);
+        const currentCount = await redis.incr(key);
         if (currentCount === 1) {
             // Set expiry based on seconds until next midnight UTC
             const now = new Date();
             const nextMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
             const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
-            await redisConnection.expire(key, ttlSeconds);
+            await redis.expire(key, ttlSeconds);
         }
         const allowed = currentCount <= limit;
         console.log(

@@ -12,50 +12,26 @@ import type { User } from '@supabase/supabase-js'; // Import the User type
 import { getJobInfo, getJobAnalysisData, updateJobStatus } from './utils/jobUtils'; // Assume helpers moved
 import { checkAndIncrementAnalysisQuota, checkAndIncrementAdjustmentQuota, getQuotaCount } from './utils/quotaUtils'; // Assume helpers moved
 import type { Segment } from './interfaces'; // Import Segment type
+import { env } from './src/config'; // Import validated env
+import { redis as redisConnection } from './src/lib/redis'; // Import redis connection instance and rename it
 
 
 console.log('Starting backend server...');
 
-// --- Configuration ---
-const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
-const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
-const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
-const PODCAST_INDEX_API_KEY = process.env.PODCAST_INDEX_API_KEY; // Read Podcast Index Key
-const PODCAST_INDEX_API_SECRET = process.env.PODCAST_INDEX_API_SECRET; // Read Podcast Index Secret
+// --- Configuration (Now mostly from env object) ---
+// const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1'; // Replaced by env.REDIS_HOST
+// ... Remove other process.env reads covered by config.ts ...
 
-// --- Startup Verification Log ---
-console.log('[Startup] Verifying Podcast Index Env Vars:');
-console.log(`  - PODCAST_INDEX_API_KEY loaded: ${PODCAST_INDEX_API_KEY ? 'Yes' : 'No - Check .env!'}`)
-console.log(`  - PODCAST_INDEX_API_SECRET loaded: ${PODCAST_INDEX_API_SECRET ? 'Yes' : 'No - Check .env!'}`)
-// --- End Verification Log ---
-
-// Default directories within the backend directory if not specified by env vars
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(import.meta.dir, 'uploads');
-const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(import.meta.dir, 'output');
-const API_PORT = parseInt(process.env.API_PORT || '3000', 10);
+// Default directories (now potentially overridden by env object)
+const UPLOAD_DIR = env.UPLOAD_DIR; // Use validated path from config
+const OUTPUT_DIR = env.OUTPUT_DIR; // Use validated path from config
+const API_PORT = env.API_PORT; // Use validated port from config
 
 const ANALYZE_QUEUE_NAME = 'audio-analyze';
 const ADJUST_QUEUE_NAME = 'audio-adjust';
 
-// --- Redis Connection ---
-console.log(`Connecting to Redis at ${REDIS_HOST}:${REDIS_PORT}...`);
-export const redisConnection = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    password: REDIS_PASSWORD,
-    maxRetriesPerRequest: null, // Required by BullMQ
-    enableReadyCheck: false,    // Required by BullMQ
-});
-
-redisConnection.on('connect', () => {
-    console.log('Successfully connected to Redis.');
-});
-
-redisConnection.on('error', (err: Error) => {
-    console.error('Redis connection error:', err);
-    // Consider exiting if Redis is essential and connection fails permanently
-    // process.exit(1);
-});
+// --- Redis Connection (Now imported from lib/redis) ---
+// Removed Redis initialization and event listeners (they are in lib/redis now)
 
 // --- Directory Setup ---
 async function ensureDirectoryExists(dirPath: string) {
@@ -71,8 +47,7 @@ async function ensureDirectoryExists(dirPath: string) {
 await ensureDirectoryExists(UPLOAD_DIR);
 await ensureDirectoryExists(OUTPUT_DIR);
 
-// --- BullMQ Queues ---
-// Pass the connection instance directly to BullMQ
+// --- BullMQ Queues (Use imported redisConnection) ---
 const analyzeAudioQueue = new Queue(ANALYZE_QUEUE_NAME, { connection: redisConnection });
 const adjustAudioQueue = new Queue(ADJUST_QUEUE_NAME, { connection: redisConnection });
 

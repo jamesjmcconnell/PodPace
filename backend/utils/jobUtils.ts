@@ -1,10 +1,5 @@
-import Redis from 'ioredis';
 import type { SpeakerWPM, Segment } from '../interfaces'; // Import needed types
-
-// --- Redis Connection (Assume redisConnection is initialized elsewhere and passed or imported) ---
-// Example: import { redisConnection } from '../index';
-// For now, declare it to satisfy the linter locally if not importing
-declare const redisConnection: Redis;
+import { redis } from '../src/lib/redis'; // CORRECTED PATH: Import the shared redis client
 
 // --- Job Status Tracking Keys ---
 const getJobStatusKey = (jobId: string) => `job:${jobId}:status`;
@@ -15,8 +10,8 @@ const getJobDataKey = (jobId: string) => `job:${jobId}:data`;
 // Get full job info (status + data)
 export async function getJobInfo(jobId: string): Promise<Record<string, string> | null> {
     try {
-        const statusData = await redisConnection.hgetall(getJobStatusKey(jobId));
-        const jobData = await redisConnection.hgetall(getJobDataKey(jobId));
+        const statusData = await redis.hgetall(getJobStatusKey(jobId));
+        const jobData = await redis.hgetall(getJobDataKey(jobId));
         if (!statusData || Object.keys(statusData).length === 0) {
             return null; // Job not found
         }
@@ -30,7 +25,7 @@ export async function getJobInfo(jobId: string): Promise<Record<string, string> 
 // Get specific analysis results needed for adjustment/preview
 export async function getJobAnalysisData(jobId: string): Promise<{ speakers: SpeakerWPM[], segments: Segment[] } | null> {
     try {
-        const jobData = await redisConnection.hgetall(getJobDataKey(jobId));
+        const jobData = await redis.hgetall(getJobDataKey(jobId));
         // Check specific keys expected from analyze worker
         if (!jobData || !jobData.speakers || !jobData.diarizationSegments) {
             console.error(`[Adjust Job ${jobId}] Missing analysis data (speakers or diarizationSegments) in Redis.`);
@@ -50,7 +45,7 @@ export async function getJobAnalysisData(jobId: string): Promise<{ speakers: Spe
 export async function updateJobStatus(jobId: string, status: string, data?: Record<string, any>) {
     console.log(`[Job ${jobId}] Updating status to ${status}`);
     try {
-        const multi = redisConnection.multi();
+        const multi = redis.multi();
         multi.hset(getJobStatusKey(jobId), 'status', status, 'updatedAt', String(Date.now()));
         if (data) {
             const dataToStore = Object.entries(data).reduce((acc, [key, value]) => {
