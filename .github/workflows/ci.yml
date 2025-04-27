@@ -2,9 +2,14 @@ name: PodPace CI
 
 on:
   push:
-    branches: [ main ] # Adjust branches as needed
+    branches:
+      - main
+      - master
+      - unshitify # Add your feature branch here
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+      - master # Add master as a target branch
 
 jobs:
   build_and_test:
