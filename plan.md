@@ -1,154 +1,131 @@
-Okay, here is a detailed plan for building the speech normalization web application, designed to be followable by another AI or a developer.
+# PodPace v2 – Updated Development Plan (Focus: Gating Infrastructure)
 
-**Project Goal:** Create a web application where users can upload a podcast audio file, view the average Words Per Minute (WPM) for each detected speaker, specify a target WPM for individual speakers they wish to adjust, and download the audio file processed to meet those targets while preserving pitch and leaving unselected speakers unchanged.
+## 0. Purpose of this document
+This plan outlines the next steps focusing on implementing the infrastructure for **feature gating** based on user status: **anonymous visitor**, **logged-in free user**, or **paid subscriber**. This includes handling the daily free quota and integrating with a payment provider (Stripe) to track subscription status.
 
-**I. Architecture Choice: Client-Server with Background Task Queue**
+It assumes **existing Supabase authentication** is functional. It **defers** the full implementation of paid-only features (e.g., podcast subscriptions, extended history) but includes the necessary backend setup (webhooks, subscription status tracking) to enable gating them later.
 
-*   **Frontend (Client-Side):** Single Page Application (SPA) running in the user's browser. Responsible for UI interactions (file upload, displaying speaker info, collecting user input for target WPMs, showing progress, providing download link).
-*   **Backend (Server-Side):** API server responsible for receiving uploads, managing processing jobs, performing all audio analysis (VAD, Diarization, ASR) and manipulation (Time-Stretching, Reconstruction), and serving the final file.
-*   **Task Queue:** Essential because audio processing is computationally intensive and time-consuming. The backend API will offload the actual processing work to background workers via a task queue system. This prevents HTTP request timeouts and allows the frontend to poll for status updates.
-*   **Temporary Storage:** Needed for uploaded files, intermediate processing artifacts (like segment files if needed), and final output files before download.
+---
 
-**II. Technology Stack Selection**
+## 1. Product Overview & Personas (Gating Focus)
+| Persona | Gating | Capabilities (Immediate Focus) |
+|---------|--------|--------------------------------|
+| **Visitor (anonymous)** | `!auth` | • Search, see preview UI (inputs disabled) |
+| **Free Account (user)** | `auth && !subscriptionActive` | • All Visitor features <br> • Process 1 ep/day (quota check) <br> • Download processed file |
+| **Paid Subscriber** | `auth && subscriptionActive` | • All Free features <br> • Unlimited processing (bypass quota) |
+| *[Deferred Features]* | | *[Podcast Subscriptions, Profile/History/Prefs UI, Priority Queue etc.]* |
 
-*   **Backend Runtime & Framework:**
-    *   **Runtime:** **Bun.js**
-    *   **Language:** **TypeScript**
-    *   **Framework:** **ElysiaJS** (Recommended for structure and performance on Bun) or Bun's native `Bun.serve()`.
-*   **Frontend Framework:**
-    *   **Framework:** **React**
-    *   **Tooling:** **Bun** (Package manager, bundler, development server).
-*   **Audio Processing & Analysis (Strategy):**
-    *   **ASR (Transcription & Word Timestamps) + Diarization (Speaker ID):**
-        *   **Method:** **Cloud-based Service API**.
-        *   **Provider Example:** **AssemblyAI** (Known for accurate ASR potentially based on or exceeding Whisper quality, speaker diarization, and word-level timestamps - all often available through a single API call). Other providers like Google Cloud Speech-to-Text or AWS Transcribe could be alternatives.
-        *   *(Rationale: Offloads complex ML processing, avoids local ML environment setup, provides both ASR and Diarization from one source, requires managing API keys and potential costs).*
-    *   **Core Audio Manipulation (Bun/TS):** Leverage **`Bun.spawn`** to call external command-line tools locally.
-        *   **Basic Audio Handling & Segmentation:** **`ffmpeg`** (via `Bun.spawn`). Requires `ffmpeg` installed on the server/container.
-        *   **Time-Stretching (Pitch Preserving):** **`rubberband-cli`** (via `Bun.spawn`). Requires `rubberband-cli` installed.
-*   **Task Queue System:**
-    *   **Broker:** **Redis** (via `ioredis` or similar Bun-compatible client).
-    *   **Queue Library:** **BullMQ**.
-*   **Temporary Storage:**
-    *   **Mechanism:** Server's local filesystem (`Bun.file`, `Bun.write`) for temporary files needed by `ffmpeg`/`rubberband`. Use UUIDs (`crypto.randomUUID()`).
-    *   **State Management:** Redis (Job status, cloud service job IDs, final results, artifact pointers).
-*   **Web Server:** **Bun** (for the main TS app).
-*   **Reverse Proxy:** **Nginx**.
+---
 
-**III. Backend API Design (Bun/ElysiaJS)**
+## 2. High-Level User Flow (Gating Focus)
+*(Largely unchanged from previous version, highlights gating checks)*
+1. **Landing (/):** Auth CTAs present.
+2. **Search & Episode Select:** Unrestricted.
+3. **Processing Screen:**
+   • Shows progress.
+   • **Adjustment UI** appears.
+   • Behaviour gated by Auth & Subscription Status:
+     ✦ Visitor: Preview only.
+     ✦ Free: Inputs enabled, "Process" button active only if quota OK.
+     ✦ Paid: Inputs enabled, "Process" button always active (shows "Unlimited").
+4. **Job Complete:** Download link shown only if processing was allowed (Free w/ quota or Paid).
 
-Define RESTful endpoints:
+---
 
-*   `POST /api/upload`
-    *   Accepts multipart/form-data with the audio file.
-    *   Saves the file to a unique temporary location.
-    *   Creates a unique `job_id` (e.g., UUID).
-    *   Initializes job status in Redis (e.g., `job:<job_id>:status = PENDING`).
-    *   Queues a background task (e.g., `analyze_audio_task(job_id, file_path)`) using Celery.
-    *   Returns `{'job_id': job_id}`.
-*   `GET /api/status/<job_id>`
-    *   Retrieves the current status from Redis (e.g., `PENDING`, `PROCESSING_DIARIZATION`, `PROCESSING_ASR`, `READY_FOR_INPUT`, `PROCESSING_ADJUSTMENT`, `COMPLETE`, `FAILED`).
-    *   If status is `READY_FOR_INPUT`, also retrieve and include the speaker WPM data (e.g., `{'status': 'READY_FOR_INPUT', 'speakers': [{'id': 'Speaker_1', 'avg_wpm': 155}, ...]}`).
-    *   If status is `FAILED`, include an error message.
-*   `POST /api/adjust/<job_id>`
-    *   Accepts JSON body with speaker adjustments: `{'targets': [{'id': 'Speaker_1', 'target_wpm': 170}, ...]}`. Any speaker ID not included is assumed to be left unchanged.
-    *   Validates the input.
-    *   Stores the targets in Redis (e.g., `job:<job_id>:targets = ...`).
-    *   Updates status in Redis (e.g., `job:<job_id>:status = QUEUED_FOR_ADJUSTMENT`).
-    *   Queues the adjustment task (e.g., `apply_adjustment_task(job_id)`) using Celery.
-    *   Returns `{'status': 'Adjustment queued'}`.
-*   `GET /api/download/<job_id>`
-    *   Checks if status is `COMPLETE` in Redis.
-    *   Retrieves the path to the final processed audio file from Redis or a known location pattern.
-    *   Serves the file using Flask's `send_file` (or equivalent) with appropriate headers for download.
-*   **(Optional) `GET /api/speakers/<job_id>`**
-    *   Alternative to bundling speaker info in `/status`. Explicitly retrieves speaker WPM data once `READY_FOR_INPUT`.
+## 3. Feature Gating & Quota Logic (Core Implementation)
+- **Identify User & Subscription Status:** Backend middleware uses `verifyAuth` (existing) and checks the `subscriptions` table (see Data Model) to determine if the user has an active subscription.
+  ```
+  user = await verifyAuth(req);
+  isActive = user ? await checkSubscriptionStatus(user.id) : false;
+  role = !user ? VISITOR : (isActive ? PAID : FREE);
+  ```
+- **Gating Adjustment/Download:** Endpoints (`/api/jobs/{id}/adjust`, `/api/jobs/{id}/download`) require auth.
+- **Quota Check (Backend - within `/adjust`):**
+    *   If `role === PAID`: **Skip** quota check, allow processing.
+    *   If `role === FREE`:
+        *   Check Redis/DB for `quota:free:<user_id>:<YYYY-MM-DD>`.
+        *   If `count < 1`: Allow processing, increment quota count, proceed.
+        *   If `count >= 1`: Return 403 Forbidden ("Daily free limit reached. Upgrade for unlimited processing.").
+- **Quota Tracking:** Redis key `quota:free:<user_id>:<YYYY-MM-DD>` with ~25h expiry (as before).
+- **Frontend Display:** Fetch user role/quota status. Conditionally enable/disable buttons, show relevant banners (`QuotaBanner`, `UpgradeBanner`).
 
-**IV. Frontend Implementation (React)**
+---
 
-*   **Components:**
-    *   `App.js`: Main component, routing (if multiple views needed, though likely single-view). Manages overall state (`jobId`, `jobStatus`, `speakerData`, `error`).
-    *   `FileUpload.js`: Contains the file input (`<input type="file">`), handles file selection, triggers the `POST /api/upload` request, and updates `jobId` state. Disables upload button while a job is active.
-    *   `JobProgress.js`: Takes `jobId` and `jobStatus` as props. Periodically polls `GET /api/status/{jobId}` (e.g., every 3-5 seconds) when a job is active but not yet `READY_FOR_INPUT` or `COMPLETE`/`FAILED`. Displays user-friendly status messages. Updates `jobStatus` and `speakerData` state in `App.js`.
-    *   `SpeakerAdjuster.js`: Takes `speakerData` and `jobId` as props. Renders only when `jobStatus` is `READY_FOR_INPUT`. Displays each speaker's ID and average WPM. Provides number input fields for users to enter `target_wpm` for specific speakers. Includes a "Process Adjustments" button that triggers `POST /api/adjust/{jobId}` with the user's targets.
-    *   `DownloadArea.js`: Takes `jobId` and `jobStatus` as props. Renders only when `jobStatus` is `COMPLETE`. Displays a download button/link pointing to `GET /api/download/{jobId}`.
-    *   `ErrorMessage.js`: Displays error messages if `jobStatus` becomes `FAILED`.
-*   **State Management:** Use React's `useState` and `useEffect` hooks for managing component state and side effects (like API calls and polling). For more complex state, consider `useReducer` or a state management library (Context API, Zustand, Redux Toolkit).
-*   **API Calls:** Use `fetch` API or libraries like `axios`.
+## 4. Data Model (Focus on Gating Needs)
+- **Supabase Auth:** Provides `users` table implicitly.
+- **`subscriptions` (New Table - PostgreSQL/Supabase DB):**
+  `id` (PK), `user_id` (FK to auth.users), `stripe_customer_id`, `stripe_subscription_id`, `status` (e.g., 'active', 'canceled', 'past_due'), `current_period_end` (Timestamp), `created_at`, `updated_at`.
+- **Redis:** For ephemeral daily quota tracking.
+- *[Deferred: jobs, adjustments, preferences, listens tables unless strictly needed for MVP gating]*
 
-**V. Backend Workflow & Core Logic (BullMQ Workers)**
+---
 
-1.  **`analyzeAudioWorker.ts` (BullMQ Worker - Handles 'analyze' jobs):**
-    *   **Update Status:** Set job status in Redis (`PROCESSING_UPLOAD_CLOUD`).
-    *   **Upload to Cloud Provider:**
-        *   Use the chosen provider's SDK or a direct HTTP request (e.g., using `fetch` in Bun) to upload the `original_file_path` to the cloud service (e.g., AssemblyAI). Get back a cloud job identifier (e.g., transcript ID). Store this ID in Redis.
-    *   **Trigger Cloud Processing:**
-        *   Make an API call to the cloud provider to start the transcription/diarization job on the uploaded audio. Ensure parameters request **speaker diarization** and **word-level timestamps**.
-        *   **Update Status:** `PROCESSING_CLOUD_ANALYSIS`. Store cloud provider's job ID in Redis.
-    *   **Poll for Cloud Results:**
-        *   Periodically make API calls to the cloud provider's status endpoint using the cloud job ID. Check if the job is complete. (Implement polling with appropriate delays and backoff).
-    *   **Retrieve & Parse Results:**
-        *   Once complete, fetch the full results JSON from the cloud provider. This should contain the transcript, word timings, and speaker labels associated with segments/words.
-        *   **Update Status:** `PROCESSING_WPM_CALCULATION`.
-        *   Parse the provider's JSON response to extract speaker segments (start time, end time, speaker label) and word timestamps.
-    *   **Calculate Average WPM per Speaker:**
-        *   Implement the WPM calculation logic in TypeScript using the diarization segments and word timestamps from the cloud service response.
-    *   **Store Results:** Save calculated speaker WPM data, and necessary cloud results (or pointers) for the adjustment phase in Redis.
-    *   **Finalize Analysis:** Update Redis: `job:<job_id>:artifacts = { ... }`, `job:<job_id>:status = READY_FOR_INPUT`.
-    *   *Error Handling:* Catch errors during API calls (upload, processing request, polling, result fetching), check for error statuses from the cloud provider, update job status to `FAILED` in Redis.
+## 5. Authentication & Authorisation
+- **Provider:** Supabase Auth (existing).
+- **Verification:** Backend uses `verifyAuth` middleware (existing).
 
-2.  **`adjustAudioWorker.ts` (BullMQ Worker - Handles 'adjust' jobs):**
-    *   **Update Status:** `PROCESSING_ADJUSTMENT`.
-    *   **Load Data:** Retrieve original path, diarization results (from Redis, originating from the cloud service), user targets, etc.
-    *   **Prepare Segments:** Reconstruct timeline (speech segments based on cloud diarization results, silence gaps derived from timestamps).
-    *   **Process Each Segment (using `Bun.spawn` for `ffmpeg`/`rubberband`):**
-        *   Initialize list for processed segment file paths.
-        *   Iterate through timeline:
-            *   **If Speech Segment:**
-                *   Get `speaker_id`, lookup `target_wpm`, calculate `scalar`.
-                *   **Extract Chunk:** `Bun.spawn` -> `ffmpeg` (`ffmpeg -i input.mp3 -ss start -to end -c copy temp_segment.wav`).
-                *   **Time-Stretch:** `Bun.spawn` -> `rubberband-cli` (`rubberband --pitch --tempo scalar temp_segment.wav stretched_segment.wav`).
-                *   Add path of `stretched_segment.wav` to list. Clean up `temp_segment.wav`.
-            *   **If Silence/Other Segment:**
-                *   **Extract/Generate:** `Bun.spawn` -> `ffmpeg`.
-                *   Add path to list.
-    *   **Reconstruct Audio (using `Bun.spawn` for `ffmpeg`):**
-        *   **Update Status:** `PROCESSING_RECONSTRUCTION`.
-        *   **Create Concat List:** Generate file listing segments.
-        *   **Concatenate:** `Bun.spawn` -> `ffmpeg` (`ffmpeg -f concat ...`).
-        *   Clean up intermediate files.
-    *   **Finalize:**
-        *   Store output path in Redis.
-        *   **Update Status:** `COMPLETE`.
-    *   *Error Handling:* Catch errors during `spawn` calls or processing, update status to `FAILED`, attempt cleanup.
+---
 
-**VI. Deployment Considerations**
+## 6. Payments (Infrastructure Setup)
+- **Provider:** Stripe Checkout + Billing Portal.
+- **Goal:** Track subscription `status` accurately in our `subscriptions` table.
+- **Implementation:**
+    *   Set up Stripe products/prices.
+    *   Implement **Stripe Webhook Handler** (`POST /api/webhooks/stripe`): Listens for events like `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`. Updates the `status` and `current_period_end` in our `subscriptions` table accordingly.
+    *   **(Optional Now, Needed Later):** Add endpoints/logic to initiate Stripe Checkout sessions and redirect to the Billing Portal.
+- *[Deferred: UI for managing subscription/billing]*
 
-*   **Containerization (Docker Compose):**
-    *   `bun-api`: Bun API server (ElysiaJS/native). Needs cloud provider API key access.
-    *   `bun-worker`: BullMQ worker(s). **Must have `ffmpeg` and `rubberband-cli` installed.** Needs cloud provider API key access.
-    *   `redis`: Redis container.
-    *   `nginx`: Nginx container.
-*   **Cloud Provider Configuration:**
-    *   Requires API keys/credentials for the chosen service (e.g., AssemblyAI). Store these securely (e.g., environment variables, secrets management) and make them available to the `bun-api` and `bun-worker` containers.
-*   **Nginx Configuration:**
-    *   Serve static React files.
-    *   Proxy `/api/` to `bun-api`.
-*   **Resources:** `bun-worker` needs resources for `ffmpeg`/`rubberband`. Cloud costs depend on provider pricing and usage.
-*   **Scalability:** Celery workers can be scaled horizontally (run more worker containers) to handle more concurrent processing jobs.
-*   **Cleanup:** Implement a strategy (e.g., a scheduled Celery task or a cron job) to delete old temporary files and Redis job entries after a certain period (e.g., 24 hours) to prevent disk/memory exhaustion.
+---
 
-**VII. Error Handling & UX**
+## 7. API Surface (Focus on Gating)
+| Method & Path | Auth | Purpose |
+|---------------|------|---------|
+| *(Existing Auth Endpoints)* | ... | ... |
+| POST `/api/upload` *(or similar)* | Optional | Start analysis job |
+| GET  `/api/status/{id}` | Any | Poll status |
+| POST `/api/jobs/{id}/adjust` | **Required** | Request modification (**Add Role & Quota Check Logic**) |
+| GET  `/api/jobs/{id}/download` | **Required** | Download file (**Verify user processed this job**) |
+| GET  `/api/user/status` | Required | Get user role (Free/Paid) & quota status |
+| POST `/api/webhooks/stripe` | **None** (Verify signature) | Update subscription status from Stripe |
+| *(Deferred)* | ... | *Endpoints for checkout, billing portal, creating podcast subscriptions* |
 
-*   **Backend:** Wrap processing steps in try/except blocks. If an error occurs in a Celery task, update the job status to `FAILED` in Redis and log the error details. Include a user-friendly error message if possible.
-*   **Frontend:** Check for `FAILED` status during polling. Display the error message from the backend. Provide clear feedback during upload and processing stages. Disable buttons appropriately to prevent conflicting actions. Handle network errors during API calls.
-*   **Include specific handling for cloud API rate limits, errors, and job failures.**
+---
 
-**VIII. Security**
+## 8. Frontend (React/Bun)
+Component changes:
+- **Modify `SpeakerAdjuster.tsx`:** Check `user.role` (Free/Paid) and `user.quotaAvailable`. Conditionally enable/disable inputs & processing button. Show appropriate messaging ("Process (1 free credit remaining)", "Process (Unlimited)", "Upgrade to Process").
+- **Add `QuotaBanner`/`UpgradeBanner.tsx`:** Show based on role/quota.
+- **Modify `Header`:** Show auth state, potentially basic account status.
+- *[Deferred: ProfilePage, Subscription Management UI etc.]*
 
-*   **Input Validation:** Sanitize file uploads (check types, potentially size limits). Validate data received in API requests (e.g., target WPMs are numbers within a reasonable range).
-*   **File Storage:** Use UUIDs for file/directory names to prevent clashes or guessing. Store temporary files outside the web root. Ensure appropriate file permissions.
-*   **Dependencies:** Keep all libraries updated to patch security vulnerabilities.
-*   **Protect cloud API keys diligently.**
+---
 
-This version focuses the backend work on interacting with the cloud API for the heavy ML lifting and using local, efficient tools (`ffmpeg`, `rubberband`) via `Bun.spawn` for the audio manipulation tasks.
+## 9. Background Jobs (BullMQ)
+- Existing workers handle core audio processing (Managed by other dev).
+- *[Deferred: subscriptionWorker]*
+
+---
+
+## 10. Dev Milestones (Revised Focus on Gating Infrastructure)
+1.  **Implement DB Table:** Create the `subscriptions` table in PostgreSQL (Supabase DB).
+2.  **Implement Stripe Webhook:** Set up the `/api/webhooks/stripe` endpoint to listen for subscription events and update the `subscriptions` table.
+3.  **Implement Role Check:** Modify backend middleware/logic to check `subscriptions` table status and determine user role (Free/Paid).
+4.  **Implement Quota Tracking & Enforcement:** Add Redis logic for daily free quota; update `/api/jobs/{id}/adjust` to enforce quota based on role.
+5.  **Implement Frontend Gating UI:** Modify frontend to fetch user role/quota, conditionally enable/disable features, and display appropriate banners/messages.
+6.  **Testing:** Thoroughly test webhook handling, role determination, quota logic, and frontend UI states.
+7.  *[Deferred: Building UI for paid features like subscription management]*
+
+---
+
+## 11. Security & Compliance Additions
+- **Webhook Security:** Verify Stripe webhook signatures.
+- Rate-limit anonymous search.
+- Ensure compliance terms are clear about free tier limits.
+
+---
+
+## 12. Open Questions
+*(Unchanged)*
+1.  Preview Implementation details?
+2.  Quota Reset timing (UTC vs. rolling)?
+3.  Confirm exact existing endpoint paths?

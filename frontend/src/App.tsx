@@ -10,6 +10,7 @@ import SearchBar from './components/SearchBar'
 import FeedList from './components/FeedList'
 import EpisodeList from './components/EpisodeList'
 import LoginPage from './pages/LoginPage'
+import AudioPlayer from './components/AudioPlayer'
 import { useAuth } from './context/AuthContext'
 
 // Import frontend interfaces from the correct relative path
@@ -485,6 +486,7 @@ function App() {
                   outputFilename={outputFilename}
                   onDownload={handleDownloadClick}
                 />
+                <AudioPlayer src={`/api/download/${jobId}`} />
               </>
             )}
 
