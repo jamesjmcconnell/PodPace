@@ -6,6 +6,9 @@ import fs from 'node:fs'; // Import the fs module
 import { handlePodcastSearch, handlePodcastEpisodes } from './routes/podcasts';
 import { type ServeOptions } from 'bun'; // Import ServeOptions type
 import { verifyAuth } from './middleware/auth'; // Import the auth middleware
+import { getUserRole, type UserRole } from './middleware/role';
+import { handleStripeWebhook } from './routes/webhooks'; // Import the handler
+import type { User } from '@supabase/supabase-js'; // Import the User type
 
 
 console.log('Starting backend server...');
@@ -148,6 +151,70 @@ interface AdjustRequestBody {
     targets: { id: string; target_wpm: number }[];
 }
 
+// --- Quota Helpers ---
+
+// Checks and increments the daily ANALYSIS quota (Limit: 3)
+async function checkAndIncrementAnalysisQuota(userId: string): Promise<boolean> {
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
+    const key = `quota:analysis:free:${userId}:${today}`;
+    const limit = 3; // Define the limit
+    try {
+        const currentCount = await redisConnection.incr(key);
+        if (currentCount === 1) {
+            // seconds until next midnight UTC
+            const now = new Date();
+            const nextMidnight = new Date(Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate() + 1, 
+                0, 0, 0, 0
+            ));
+            const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
+            await redisConnection.expire(key, ttlSeconds);
+        }
+        const allowed = currentCount <= limit;
+        console.log(
+            `[QuotaCheck Analysis] User: ${userId}, Date: ${today}, ` +
+            `Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`
+        );
+        return allowed;
+    } catch (error) {
+        console.error(`[QuotaCheck Analysis] Redis error for user ${userId}:`, error);
+        return false; // Fail closed
+    }
+}
+
+// Renamed for clarity: Checks and increments the daily ADJUSTMENT quota (Limit: 1)
+async function checkAndIncrementAdjustmentQuota(userId: string): Promise<boolean> {
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
+    const key = `quota:adjust:free:${userId}:${today}`; // New key pattern
+    const limit = 1; // Define the limit
+    try {
+        const currentCount = await redisConnection.incr(key);
+        if (currentCount === 1) {
+            // seconds until next midnight UTC
+            const now = new Date();
+            const nextMidnight = new Date(Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate() + 1, 
+                0, 0, 0, 0
+            ));
+            const ttlSeconds = Math.floor((nextMidnight.getTime() - now.getTime()) / 1000);
+            await redisConnection.expire(key, ttlSeconds);
+        }
+        const allowed = currentCount <= limit;
+        console.log(
+            `[QuotaCheck Adjust] User: ${userId}, Date: ${today}, ` +
+            `Count: ${currentCount}, Limit: ${limit}, Allowed: ${allowed}`
+        );
+        return allowed;
+    } catch (error) {
+        console.error(`[QuotaCheck Adjust] Redis error for user ${userId}:`, error);
+        return false; // Fail closed
+    }
+}
+
 async function handleAdjust(req: Request, jobId: string): Promise<Response> {
     console.log(`Handling POST /api/adjust/${jobId}`);
     const jobInfo = await getJobInfo(jobId);
@@ -205,8 +272,19 @@ async function handleAdjust(req: Request, jobId: string): Promise<Response> {
 
 // --- Route Handlers ---
 
-async function handleUpload(req: Request): Promise<Response> {
-    console.log('Handling POST /api/upload (FormData -> Stream Write)');
+// Updated handleUpload to require auth and check analysis quota
+async function handleUpload(req: Request, user: User, role: UserRole): Promise<Response> {
+    console.log(`[Upload] Handling POST /api/upload for user ${user.id} (Role: ${role})`);
+
+    // --- Apply Analysis Quota Check ---
+    if (role === 'FREE') {
+        const quotaAllowed = await checkAndIncrementAnalysisQuota(user.id);
+        if (!quotaAllowed) {
+            return errorResponse('Daily analysis limit reached (3/day). Upgrade for unlimited analyses.', 403);
+        }
+        // Proceed if quota allowed...
+    }
+    // Skip check if role === 'PAID'
 
     // Expect multipart/form-data
     const contentType = req.headers.get('content-type');
@@ -214,8 +292,8 @@ async function handleUpload(req: Request): Promise<Response> {
         return errorResponse('Invalid content type, expected multipart/form-data', 400);
     }
 
-    let filePath: string | null = null; // Define filePath outside try block for potential cleanup
-    let jobId: string | null = null;    // Define jobId outside try block
+    let filePath: string | null = null;
+    let jobId: string | null = null;
 
     try {
         const formData = await req.formData();
@@ -262,19 +340,15 @@ async function handleUpload(req: Request): Promise<Response> {
         // --- End of Streaming logic ---
 
         // File saved, now update status and queue job
-        await updateJobStatus(jobId, 'PENDING', { originalFilename, filePath });
+        await updateJobStatus(jobId, 'PENDING', { originalFilename, filePath, userId: user.id });
 
-        await analyzeAudioQueue.add(ANALYZE_QUEUE_NAME, {
-            jobId,
-            filePath,
-            originalFilename
-        });
-        console.log(`Job ${jobId} added to ${ANALYZE_QUEUE_NAME} queue.`);
+        await analyzeAudioQueue.add(ANALYZE_QUEUE_NAME, { jobId, filePath, originalFilename, userId: user.id });
+        console.log(`[Upload] Job ${jobId} added to ${ANALYZE_QUEUE_NAME} queue for user ${user.id}.`);
 
         return jsonResponse({ job_id: jobId }, 202);
 
     } catch (error: any) {
-        console.error(`Error handling upload for job ${jobId || 'unknown'}:`, error);
+        console.error(`[Upload] Error handling upload for job ${jobId || 'unknown'} user ${user.id}:`, error);
         // Attempt cleanup if filePath was determined before the main error
         if (filePath) {
              try { await fs.promises.unlink(filePath); } catch { /* ignore cleanup error */ }
@@ -346,6 +420,63 @@ async function handleDownload(req: Request, jobId: string): Promise<Response> {
     }
 }
 
+// --- Proxy Handler ---
+async function handleAudioProxy(req: Request): Promise<Response> {
+    const urlParam = new URL(req.url).searchParams.get('url');
+    if (!urlParam) {
+        return errorResponse('Missing target URL parameter', 400);
+    }
+
+    let targetUrl: URL;
+    try {
+        targetUrl = new URL(urlParam);
+        // Optional: Add domain validation if needed
+        // const allowedDomains = ['api.substack.com', 'some.other.domain'];
+        // if (!allowedDomains.includes(targetUrl.hostname)) {
+        //     return errorResponse('Proxying from this domain is not allowed', 403);
+        // }
+    } catch (e) {
+        return errorResponse('Invalid target URL parameter', 400);
+    }
+
+    console.log(`[Proxy] Fetching: ${targetUrl.toString()}`);
+
+    try {
+        // Fetch the audio from the target URL
+        const externalResponse = await fetch(targetUrl.toString(), {
+            headers: { 'User-Agent': 'PodPaceProxy/1.0' } // Set a reasonable UA
+        });
+
+        if (!externalResponse.ok) {
+            console.error(`[Proxy] Error fetching ${targetUrl}: ${externalResponse.status} ${externalResponse.statusText}`);
+            return errorResponse(`Failed to fetch external audio: ${externalResponse.status}`, externalResponse.status);
+        }
+
+        // Create headers for our response, copying essentials
+        const responseHeaders = new Headers({
+            'Access-Control-Allow-Origin': '*', // Allow frontend origin
+            // Copy content type from original response
+            'Content-Type': externalResponse.headers.get('Content-Type') || 'application/octet-stream',
+        });
+
+        // Copy content length if available
+        const contentLength = externalResponse.headers.get('Content-Length');
+        if (contentLength) {
+            responseHeaders.set('Content-Length', contentLength);
+        }
+
+        // Stream the body back
+        return new Response(externalResponse.body, {
+            status: externalResponse.status,
+            headers: responseHeaders
+        });
+
+    } catch (error: any) {
+        console.error(`[Proxy] Network error fetching ${targetUrl}:`, error);
+        return errorResponse(`Proxy failed: ${error.message}`, 502); // Bad Gateway
+    }
+}
+
 // --- Bun HTTP Server --- //
 const serverOptions: ServeOptions = {
     port: API_PORT,
@@ -370,6 +501,13 @@ const serverOptions: ServeOptions = {
             });
         }
 
+        // --- Stripe Webhook (Special Case - Needs Raw Body) ---
+        // Handle before authentication or other checks
+        if (url.pathname === '/api/webhooks/stripe' && req.method === 'POST') {
+            console.log('Stripe webhook request received.');
+            return handleStripeWebhook(req);
+        }
+
         // --- Public Routes (No Auth Required) ---
         if (url.pathname === '/' && req.method === 'GET') {
             return jsonResponse({ status: 'ok', timestamp: Date.now() });
@@ -383,19 +521,34 @@ const serverOptions: ServeOptions = {
             }
         }
 
-        // --- Protected Routes (Auth Required) ---
+        // --- Audio Proxy Route ---
+        if (url.pathname === '/api/proxy/audio' && req.method === 'GET') {
+             return handleAudioProxy(req);
+        }
 
-        // Verify Auth for all subsequent routes
+        // --- Protected Routes (Auth Required) ---
         const user = await verifyAuth(req);
+        // Handle cases needing auth early, like upload
+        if (url.pathname === '/api/upload' && req.method === 'POST') {
+            if (!user) {
+                // Visitor trying to upload - deny
+                return errorResponse('Authentication required to upload or process audio.', 401);
+            }
+            const role = await getUserRole(user);
+            console.log(`[Auth /upload] user ${user.id} role = ${role}`);
+            // Pass user and role to the handler
+            return handleUpload(req, user, role);
+        }
+
+        // For other protected routes, verify auth if not already done implicitly by upload check
         if (!user) {
+            // This check might be redundant if all routes below /upload are covered,
+            // but keep for safety unless explicitly removing other routes from protection.
             return errorResponse('Unauthorized: Invalid or missing token', 401);
         }
-        // If we reach here, user is authenticated
-        console.log(`[Auth] Request authorized for user: ${user.id}`);
-
-        if (url.pathname === '/api/upload' && req.method === 'POST') {
-            return handleUpload(req /*, user */);
-        }
+        // Determine role if not already determined for upload
+        const role = await getUserRole(user);
+        console.log(`[Auth] user ${user.id} role = ${role}`);
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'status' && pathSegments[2] && req.method === 'GET') {
             const jobId = pathSegments[2];
@@ -405,8 +558,33 @@ const serverOptions: ServeOptions = {
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'adjust' && pathSegments[2] && req.method === 'POST') {
             const jobId = pathSegments[2];
-            // TODO: Optionally add logic to check if this user owns the job
-            return handleAdjust(req, jobId /*, user */);
+
+            // --- Add Debug Log 1 ---
+            console.log(`[Debug /adjust] Entered route. Job: ${jobId}, Role: ${role}, User: ${user.id}`);
+
+            // --- Apply Quota Check ---
+            if (role === 'FREE') {
+                 // --- Add Debug Log 2 ---
+                console.log(`[Debug /adjust] Role is FREE. Attempting quota check for user ${user.id}.`);
+                const quotaAllowed = await checkAndIncrementAdjustmentQuota(user.id);
+                if (!quotaAllowed) {
+                    // --- Add Debug Log 3 ---
+                    console.log(`[Debug /adjust] Quota check returned false. Denying access.`);
+                    return errorResponse('Daily free processing limit reached. Upgrade for unlimited processing.', 403); // 403 Forbidden
+                }
+                 // --- Add Debug Log 4 ---
+                console.log(`[Debug /adjust] Quota check returned true. Proceeding.`);
+                // If quotaAllowed is true, proceed... quota was incremented.
+            } else {
+                 // --- Add Debug Log 5 ---
+                console.log(`[Debug /adjust] Role is ${role}. Skipping quota check.`);
+            }
+            // If role === 'PAID', quota check is skipped.
+
+            // TODO: Verify user owns this job ID before adjusting? Maybe later.
+             // --- Add Debug Log 6 ---
+            console.log(`[Debug /adjust] Proceeding to call handleAdjust function for job ${jobId}.`);
+            return handleAdjust(req, jobId /*, user, role */); // Pass user/role if handler needs it
         }
 
         if (pathSegments[0] === 'api' && pathSegments[1] === 'download' && pathSegments[2] && req.method === 'GET') {

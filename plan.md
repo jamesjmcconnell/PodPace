@@ -39,15 +39,24 @@ It assumes **existing Supabase authentication** is functional. It **defers** the
   isActive = user ? await checkSubscriptionStatus(user.id) : false;
   role = !user ? VISITOR : (isActive ? PAID : FREE);
   ```
-- **Gating Adjustment/Download:** Endpoints (`/api/jobs/{id}/adjust`, `/api/jobs/{id}/download`) require auth.
-- **Quota Check (Backend - within `/adjust`):**
-    *   If `role === PAID`: **Skip** quota check, allow processing.
-    *   If `role === FREE`:
-        *   Check Redis/DB for `quota:free:<user_id>:<YYYY-MM-DD>`.
-        *   If `count < 1`: Allow processing, increment quota count, proceed.
-        *   If `count >= 1`: Return 403 Forbidden ("Daily free limit reached. Upgrade for unlimited processing.").
-- **Quota Tracking:** Redis key `quota:free:<user_id>:<YYYY-MM-DD>` with ~25h expiry (as before).
-- **Frontend Display:** Fetch user role/quota status. Conditionally enable/disable buttons, show relevant banners (`QuotaBanner`, `UpgradeBanner`).
+- **Gating Analysis Start (`/api/upload` or similar):**
+  *   This endpoint **must now require authentication**.
+  *   If `role === PAID`: Allow analysis start.
+  *   If `role === FREE`: Check **Analysis Quota** (e.g., 3/day). If quota available, allow and increment `quota:analysis:free:<user_id>:<YYYY-MM-DD>`. If not, return 403 Forbidden.
+  *   If `role === VISITOR`: Deny analysis start (must log in/sign up).
+- **Gating Adjustment (`/api/jobs/{id}/adjust`):**
+  *   Requires authentication (existing).
+  *   If `role === PAID`: Allow adjustment.
+  *   If `role === FREE`: Check **Adjustment Quota** (1/day). If quota available, allow and increment `quota:adjust:free:<user_id>:<YYYY-MM-DD>`. If not, return 403 Forbidden.
+- **Gating Download (`/api/jobs/{id}/download`):**
+  *   Requires authentication (existing).
+  *   Allow only if the job was successfully adjusted (i.e., gating passed at the `/adjust` step).
+- **Quota Tracking:** Use separate Redis keys:
+  *   `quota:analysis:free:<user_id>:<YYYY-MM-DD>` (Limit: e.g., 3, TTL: ~25h)
+  *   `quota:adjust:free:<user_id>:<YYYY-MM-DD>` (Limit: 1, TTL: ~25h)
+- **Subscription Re-check:** Gated endpoints re-fetch subscription status on each call.
+- **Quota Reset Time:** Midnight UTC daily.
+- **Frontend Display:** Fetch relevant quota statuses. Show messages like "Analyses remaining today: X/3" or "Daily adjustment used". Disable relevant buttons (Select Episode, Process Adjustments) based on quota and role.
 
 ---
 
@@ -81,13 +90,13 @@ It assumes **existing Supabase authentication** is functional. It **defers** the
 | Method & Path | Auth | Purpose |
 |---------------|------|---------|
 | *(Existing Auth Endpoints)* | ... | ... |
-| POST `/api/upload` *(or similar)* | Optional | Start analysis job |
+| POST `/api/upload` *(or similar)* | **Required** | Start analysis job (**Add Role & Analysis Quota Check**) |
 | GET  `/api/status/{id}` | Any | Poll status |
-| POST `/api/jobs/{id}/adjust` | **Required** | Request modification (**Add Role & Quota Check Logic**) |
+| POST `/api/jobs/{id}/adjust` | **Required** | Request modification (**Add Role & Adjustment Quota Check**) |
 | GET  `/api/jobs/{id}/download` | **Required** | Download file (**Verify user processed this job**) |
-| GET  `/api/user/status` | Required | Get user role (Free/Paid) & quota status |
+| GET  `/api/user/status` | Required | Get user role (Free/Paid) & quota statuses |
 | POST `/api/webhooks/stripe` | **None** (Verify signature) | Update subscription status from Stripe |
-| *(Deferred)* | ... | *Endpoints for checkout, billing portal, creating podcast subscriptions* |
+| *(Deferred)* | ... | *Endpoints for checkout, billing portal, etc.* |
 
 ---
 
@@ -107,13 +116,15 @@ Component changes:
 ---
 
 ## 10. Dev Milestones (Revised Focus on Gating Infrastructure)
-1.  **Implement DB Table:** Create the `subscriptions` table in PostgreSQL (Supabase DB).
-2.  **Implement Stripe Webhook:** Set up the `/api/webhooks/stripe` endpoint to listen for subscription events and update the `subscriptions` table.
-3.  **Implement Role Check:** Modify backend middleware/logic to check `subscriptions` table status and determine user role (Free/Paid).
-4.  **Implement Quota Tracking & Enforcement:** Add Redis logic for daily free quota; update `/api/jobs/{id}/adjust` to enforce quota based on role.
-5.  **Implement Frontend Gating UI:** Modify frontend to fetch user role/quota, conditionally enable/disable features, and display appropriate banners/messages.
-6.  **Testing:** Thoroughly test webhook handling, role determination, quota logic, and frontend UI states.
-7.  *[Deferred: Building UI for paid features like subscription management]*
+1.  **Implement DB Table:** Create `subscriptions` table (Done).
+2.  **Implement Stripe Webhook:** Set up `/api/webhooks/stripe` handler (Done).
+3.  **Implement Role Check:** Add backend logic to check `subscriptions` table & determine role (Done).
+4.  **Implement Quota Tracking & Enforcement:**
+    *   Add Redis logic for **both** `analysis` (limit 3) and `adjustment` (limit 1) quotas.
+    *   Add enforcement to `/api/upload` (analysis quota) and `/api/jobs/{id}/adjust` (adjustment quota) based on role.
+5.  **Implement Frontend Gating UI:** Modify frontend to fetch role/quota statuses, conditionally enable/disable features (episode selection, adjustment processing), display appropriate banners/messages.
+6.  **Testing:** Thoroughly test webhook handling, role determination, *both* quota logics, and frontend UI states.
+7.  *[Deferred: Building UI for paid features]*
 
 ---
 
@@ -125,7 +136,7 @@ Component changes:
 ---
 
 ## 12. Open Questions
-*(Unchanged)*
-1.  Preview Implementation details?
-2.  Quota Reset timing (UTC vs. rolling)?
-3.  Confirm exact existing endpoint paths?
+*(Updated)*
+1.  **Preview Implementation:** Add endpoint `GET /api/jobs/{id}/preview?speaker_id=...&sec=10` that returns a pre-generated or on-the-fly 10-second clip.
+2.  **Quota Reset Strategy:** decided = midnight UTC; revisit only if needed.
+3.  **Confirm endpoint paths** (upload vs. jobs/new) – clarify with current backend code.
