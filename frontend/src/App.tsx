@@ -13,11 +13,8 @@ import LoginPage from './pages/LoginPage'
 import AudioPlayer from './components/AudioPlayer'
 import { useAuth } from './context/AuthContext'
 import Banner from './components/Banner'
-
-// Import frontend interfaces from the correct relative path
-import type { SpeakerWPM, JobStatus, PodcastFeed, PodcastEpisode, UserRole, QuotaInfo } from './interfaces'
-
-
+// Import shared types using alias
+import type { JobStatus, PodcastFeed, PodcastEpisode, UserRole, QuotaInfo } from '~/common/types'
 
 // Define types for our state
 interface SpeakerInfo {
@@ -46,19 +43,15 @@ function App() {
   const [feeds, setFeeds] = useState<PodcastFeed[]>([]);
   const [selectedFeed, setSelectedFeed] = useState<PodcastFeed | null>(null);
   const [episodes, setEpisodes] = useState<PodcastEpisode[]>([]);
-  const [selectedEpisode, setSelectedEpisode] = useState<PodcastEpisode|null>(null);
-  // New state for episode loading and pagination
   const [isLoadingEpisodes, setIsLoadingEpisodes] = useState<boolean>(false);
   const [hasMoreEpisodes, setHasMoreEpisodes] = useState<boolean>(false);
   const [lastEpisodeTimestamp, setLastEpisodeTimestamp] = useState<number | null>(null);
   const EPISODE_PAGE_SIZE = 20; // How many episodes to fetch per batch
-  // New state for welcome message visibility
   const [showWelcomeMessage, setShowWelcomeMessage] = useState<boolean>(true);
-
-  // --- NEW State for Role and Quota ---
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [quotaStatus, setQuotaStatus] = useState<QuotaInfo | null>(null);
-  // ------------------------------------
+  const [selectingEpisodeId, setSelectingEpisodeId] = useState<string | null>(null);
+  const [processingEpisodeTitle, setProcessingEpisodeTitle] = useState<string | null>(null);
 
   // Helper function to get auth headers
   const getAuthHeaders = (): Record<string, string> => {
@@ -143,11 +136,12 @@ function App() {
   const handleReset = () => {
     setJobId(null);
     setJobStatus('IDLE');
-    setSelectedEpisode(null);
-    setSpeakerData([]);
+    setSelectedFeed(null);
+    setEpisodes([]);
     setError(null);
     setIsLoading(false);
     setOutputFilename(null);
+    setProcessingEpisodeTitle(null);
   };
 
   const handlePodcastSearch = async (query: string) => {
@@ -220,16 +214,18 @@ function App() {
 
   // Function to load the next batch of episodes
   const loadMoreEpisodes = async () => {
+    // Guard clause (no changes needed here)
     if (!selectedFeed || isLoadingEpisodes || !hasMoreEpisodes || lastEpisodeTimestamp === null) {
-        console.log('[loadMoreEpisodes] Skipping: Not ready or no more episodes.');
-        return; // Don't load if already loading, no more pages, or initial load pending
+        console.log(`[loadMoreEpisodes] Skipping: isLoading=${isLoadingEpisodes}, hasMore=${hasMoreEpisodes}, feed=${!!selectedFeed}, since=${lastEpisodeTimestamp}`);
+        return;
     }
 
-    console.log(`[loadMoreEpisodes] Loading more for feed ${selectedFeed.id} since ${lastEpisodeTimestamp}`);
+    console.log(`[loadMoreEpisodes] START: Setting isLoadingEpisodes=true. Since: ${lastEpisodeTimestamp}`);
     setIsLoadingEpisodes(true);
-    setError(null); // Clear previous errors
+    setError(null);
 
     try {
+        // --- Fetching ---
         const apiUrl = '/api';
         const res = await fetch(`${apiUrl}/podcasts/episodes?feedId=${encodeURIComponent(selectedFeed.id)}&max=${EPISODE_PAGE_SIZE}&since=${lastEpisodeTimestamp}`);
         if (!res.ok) {
@@ -237,91 +233,123 @@ function App() {
             throw new Error(errorData.error || `Load more failed (${res.status})`);
         }
         const data = await res.json();
-        console.log('[loadMoreEpisodes] got episodes response:', data);
+        console.log('[loadMoreEpisodes] API call finished. Items received:', data.episodes?.length || 0);
 
         const newEpisodes: PodcastEpisode[] = (data.episodes || []).map((ep: any) => ({
-          id: String(ep.id), // Ensure ID is a string
-          title: ep.title,
-          datePublished: parseInt(ep.datePublished, 10), // Parse the timestamp as integer
-          datePublishedPretty: ep.datePublishedPretty, // Map the pretty date string
-          audioUrl: ep.audioUrl,
+            id: String(ep.id),
+            title: ep.title,
+            datePublished: parseInt(ep.datePublished, 10),
+            datePublishedPretty: ep.datePublishedPretty,
+            audioUrl: ep.audioUrl,
         }));
 
-        // Append new episodes to the existing list
-        setEpisodes(prevEpisodes => [...prevEpisodes, ...newEpisodes]);
+        // --- Processing & State Update ---
+        // Get the current list *before* updating
+        const currentEpisodes = episodes;
+        const combined = [...currentEpisodes, ...newEpisodes];
 
-        // Update pagination state: More exist if the API returned new episodes
-        setHasMoreEpisodes(newEpisodes.length > 0);
-        if (newEpisodes.length > 0) {
-           setLastEpisodeTimestamp(newEpisodes[newEpisodes.length - 1].datePublished);
+        // Deduplicate
+        const episodeMap = new Map<string, PodcastEpisode>();
+        combined.forEach(ep => {
+            episodeMap.set(ep.id, ep);
+        });
+        const uniqueEpisodes = Array.from(episodeMap.values());
+        console.log(`[loadMoreEpisodes] Combined: ${combined.length}, Unique: ${uniqueEpisodes.length}`);
+
+        // Determine if new content was actually added after deduplication
+        const newContentAdded = uniqueEpisodes.length > currentEpisodes.length;
+        const moreEpisodesMightExist = newEpisodes.length > 0; // API returned something
+
+        // Update state *once* with the final list
+        setEpisodes(uniqueEpisodes);
+        console.log(`[loadMoreEpisodes] setEpisodes called with ${uniqueEpisodes.length} unique episodes.`);
+
+        // Update pagination state based on whether new unique content was added
+        // and whether the API indicated more might exist (by returning items)
+        const nextHasMore = newContentAdded && moreEpisodesMightExist;
+        console.log(`[loadMoreEpisodes] Updating hasMoreEpisodes to: ${nextHasMore}`);
+        setHasMoreEpisodes(nextHasMore);
+
+        // Update timestamp only if new unique content was added and more might exist
+        if (nextHasMore && uniqueEpisodes.length > 0) {
+           const newTimestamp = uniqueEpisodes[uniqueEpisodes.length - 1].datePublished;
+           console.log(`[loadMoreEpisodes] Updating lastEpisodeTimestamp to: ${newTimestamp}`);
+           setLastEpisodeTimestamp(newTimestamp);
+        } else {
+            console.log(`[loadMoreEpisodes] Not updating lastEpisodeTimestamp.`);
         }
 
     } catch (e: any) {
+        console.error('[loadMoreEpisodes] Error caught:', e);
         setError(e.message);
         setHasMoreEpisodes(false); // Stop trying on error
     } finally {
+        console.log('[loadMoreEpisodes] FINALLY: Setting isLoadingEpisodes=false.');
         setIsLoadingEpisodes(false);
     }
   };
 
   const handleEpisodeSelect = async (ep: PodcastEpisode) => {
+    setSelectingEpisodeId(ep.id);
+    setError(null);
+    setProcessingEpisodeTitle(ep.title);
+
     try {
-        setError(null);
-        setIsLoading(true);
-        setSelectedEpisode(ep);
+      // Keep track of the selected episode locally within the function scope
+      const currentSelectedEpisode = ep;
+      console.log(`[App] Selected episode: ${currentSelectedEpisode.title} (ID: ${currentSelectedEpisode.id})`);
 
-        // Fetch audio via backend proxy to avoid CORS
-        console.log(`[App] Requesting proxy for audio: ${ep.audioUrl}`);
-        const proxyUrl = `/api/proxy/audio?url=${encodeURIComponent(ep.audioUrl)}`;
-        const audioResp = await fetch(proxyUrl);
+      // Fetch audio via backend proxy to avoid CORS
+      console.log(`[App] Requesting proxy for audio: ${ep.audioUrl}`);
+      const proxyUrl = `/api/proxy/audio?url=${encodeURIComponent(ep.audioUrl)}`;
+      const audioResp = await fetch(proxyUrl);
 
-        if (!audioResp.ok) {
-            // Try to get error message from proxy if possible
-            const errorText = await audioResp.text().catch(() => `Proxy fetch failed with status ${audioResp.status}`);
-            console.error(`[App] Proxy fetch failed: ${audioResp.status}`, errorText);
-            // Attempt to parse JSON, fallback to text
-            let errorMessage = `Proxy fetch failed (${audioResp.status})`;
-            try {
-                const errorJson = JSON.parse(errorText);
-                if (errorJson.error) errorMessage = errorJson.error;
-            } catch { /* Ignore JSON parse error */ }
-            throw new Error(errorMessage);
-        }
-        console.log(`[App] Proxy fetch successful, getting blob.`);
-        const blob = await audioResp.blob();
+      if (!audioResp.ok) {
+          // Try to get error message from proxy if possible
+          const errorText = await audioResp.text().catch(() => `Proxy fetch failed with status ${audioResp.status}`);
+          console.error(`[App] Proxy fetch failed: ${audioResp.status}`, errorText);
+          // Attempt to parse JSON, fallback to text
+          let errorMessage = `Proxy fetch failed (${audioResp.status})`;
+          try {
+              const errorJson = JSON.parse(errorText);
+              if (errorJson.error) errorMessage = errorJson.error;
+          } catch { /* Ignore JSON parse error */ }
+          throw new Error(errorMessage);
+      }
+      console.log(`[App] Proxy fetch successful, getting blob.`);
+      const blob = await audioResp.blob();
 
-        // Proceed with upload using the blob from the proxy
-        const form = new FormData();
-        const safeTitle = ep.title.replace(/[^a-z0-9]/gi, '_');
-        form.append('audioFile', blob, `${safeTitle}.mp3`);
+      // Proceed with upload using the blob from the proxy
+      const form = new FormData();
+      const safeTitle = ep.title.replace(/[^a-z0-9]/gi, '_');
+      form.append('audioFile', blob, `${safeTitle}.mp3`);
 
-        const apiUrl = '/api';
-        console.log('[App] Uploading blob from proxy...');
-        const uploadRes = await fetch(`${apiUrl}/upload`, {
-            method: 'POST',
-            headers: {
-                ...getAuthHeaders()
-            },
-            body: form,
-        });
-        if (!uploadRes.ok) {
-            const errorData = await uploadRes.json().catch(() => ({ error: `Upload failed (${uploadRes.status})` }));
-            throw new Error(errorData.error || `Upload failed (${uploadRes.status})`);
-        }
-        const result = await uploadRes.json();
-        console.log('[App] Upload successful after proxy.');
-        handleUploadSuccess(result.job_id);
-        setSelectedFeed(null);
-        setFeeds([]);
-        setEpisodes([]);
-        setMode('UPLOAD');
+      const apiUrl = '/api';
+      console.log('[App] Uploading blob from proxy...');
+      const uploadRes = await fetch(`${apiUrl}/upload`, {
+          method: 'POST',
+          headers: {
+              ...getAuthHeaders()
+          },
+          body: form,
+      });
+      if (!uploadRes.ok) {
+          const errorData = await uploadRes.json().catch(() => ({ error: `Upload failed (${uploadRes.status})` }));
+          throw new Error(errorData.error || `Upload failed (${uploadRes.status})`);
+      }
+      const result = await uploadRes.json();
+      console.log('[App] Upload successful after proxy.');
+      handleUploadSuccess(result.job_id);
+      setSelectedFeed(null);
+      setFeeds([]);
+      setEpisodes([]);
+      setMode('UPLOAD');
     } catch (e: any) {
         console.error('[App] Error during episode selection/upload:', e);
         setError(e.message);
-        // Reset relevant state on error?
-        setSelectedEpisode(null);
+        setProcessingEpisodeTitle(null);
     } finally {
-        setIsLoading(false);
+        setSelectingEpisodeId(null);
     }
   }
 
@@ -509,6 +537,7 @@ function App() {
                   isLoading={isLoadingEpisodes}
                   hasMore={hasMoreEpisodes}
                   onLoadMore={loadMoreEpisodes}
+                  selectingEpisodeId={selectingEpisodeId}
                 />
               </>
             )}
@@ -518,10 +547,10 @@ function App() {
         {/* --- Active Job State Rendering --- */}
         {jobStatus !== 'IDLE' && (
           <>
-            {/* Show the selected episode title */}
-            {selectedEpisode && (
+            {/* Show the stored processing episode title */}
+            {processingEpisodeTitle && (
               <h3 style={{ margin: '1rem 0' }}>
-                Processing episode: "{selectedEpisode.title}"
+                Processing episode: "{processingEpisodeTitle}"
               </h3>
             )}
 
@@ -547,13 +576,12 @@ function App() {
             {/* Final download area with completed title */}
             {jobStatus === 'COMPLETE' && jobId && outputFilename && (
               <>
-                {selectedEpisode && (
+                {processingEpisodeTitle && (
                   <h3 style={{ margin: '1rem 0' }}>
-                    Finished: "{selectedEpisode.title}"
+                    Finished: "{processingEpisodeTitle}"
                   </h3>
                 )}
                 <DownloadArea
-                  jobId={jobId}
                   outputFilename={outputFilename}
                   onDownload={handleDownloadClick}
                 />

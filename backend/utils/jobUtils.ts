@@ -7,7 +7,11 @@ const getJobDataKey = (jobId: string) => `job:${jobId}:data`;
 
 // --- Helper Functions ---
 
-// Get full job info (status + data)
+/**
+ * Retrieves combined status and data for a given job ID from Redis.
+ * @param jobId The ID of the job to retrieve information for.
+ * @returns A promise resolving to a record of job info (strings) or null if not found/error.
+ */
 export async function getJobInfo(jobId: string): Promise<Record<string, string> | null> {
     try {
         const statusData = await redis.hgetall(getJobStatusKey(jobId));
@@ -22,7 +26,12 @@ export async function getJobInfo(jobId: string): Promise<Record<string, string> 
     }
 }
 
-// Get specific analysis results needed for adjustment/preview
+/**
+ * Retrieves parsed speaker WPMs and diarization segments for a job from Redis.
+ * Assumes data was stored by the analyze worker under specific keys.
+ * @param jobId The ID of the job.
+ * @returns A promise resolving to an object with speakers and segments, or null if not found/error.
+ */
 export async function getJobAnalysisData(jobId: string): Promise<{ speakers: SpeakerWPM[], segments: Segment[] } | null> {
     try {
         const jobData = await redis.hgetall(getJobDataKey(jobId));
@@ -41,7 +50,13 @@ export async function getJobAnalysisData(jobId: string): Promise<{ speakers: Spe
     }
 }
 
-// Function to update job status (could also live here)
+/**
+ * Updates the status and optionally merges data for a job in Redis.
+ * Uses a MULTI command for atomic updates.
+ * @param jobId The ID of the job to update.
+ * @param status The new status string.
+ * @param data Optional record of additional data to merge (will be stringified).
+ */
 export async function updateJobStatus(jobId: string, status: string, data?: Record<string, any>) {
     console.log(`[Job ${jobId}] Updating status to ${status}`);
     try {

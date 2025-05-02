@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// Import shared interface from the frontend interfaces file
-import type { SpeakerWPM, TargetWPM, UserRole, QuotaInfo } from '../interfaces';
+// Import shared interface using alias
+import type { SpeakerWPM, TargetWPM, UserRole, QuotaInfo } from '~/common/types';
 
 interface SpeakerAdjusterProps {
   jobId: string;

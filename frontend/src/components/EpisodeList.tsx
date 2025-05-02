@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useCallback } from 'react';
-import { PodcastEpisode } from '../interfaces';
+import type { PodcastEpisode } from '~/common/types';
+import { useThrottle } from '../hooks/useThrottle';
 
 interface Props {
     episodes: PodcastEpisode[];
@@ -7,12 +8,14 @@ interface Props {
     isLoading: boolean;
     hasMore: boolean;
     onLoadMore: () => void;
+    selectingEpisodeId: string | null;
 }
 
-const EpisodeList: React.FC<Props> = ({ episodes, onSelectEpisode, isLoading, hasMore, onLoadMore }) => {
+const EpisodeList: React.FC<Props> = ({ episodes, onSelectEpisode, isLoading, hasMore, onLoadMore, selectingEpisodeId }) => {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const THROTTLE_DELAY = 1000;
 
-    const handleScroll = useCallback(() => {
+    const checkScrollPosition = useCallback(() => {
         const container = scrollContainerRef.current;
         if (!container) return;
 
@@ -20,23 +23,24 @@ const EpisodeList: React.FC<Props> = ({ episodes, onSelectEpisode, isLoading, ha
         const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < scrollThreshold;
 
         if (isNearBottom && !isLoading && hasMore) {
-            console.log('[EpisodeList] Scroll near bottom detected, calling onLoadMore...');
+            console.log('[EpisodeList] Throttled check: Near bottom, calling onLoadMore...');
             onLoadMore();
         }
     }, [isLoading, hasMore, onLoadMore]);
 
+    const throttledScrollHandler = useThrottle(checkScrollPosition, THROTTLE_DELAY);
+
     useEffect(() => {
         const container = scrollContainerRef.current;
         if (container) {
-            container.addEventListener('scroll', handleScroll);
-            console.log('[EpisodeList] Scroll listener added.');
-
+            container.addEventListener('scroll', throttledScrollHandler);
+            console.log('[EpisodeList] Throttled scroll listener added.');
             return () => {
-                container.removeEventListener('scroll', handleScroll);
-                console.log('[EpisodeList] Scroll listener removed.');
+                container.removeEventListener('scroll', throttledScrollHandler);
+                console.log('[EpisodeList] Throttled scroll listener removed.');
             };
         }
-    }, [handleScroll]);
+    }, [throttledScrollHandler]);
 
     useEffect(() => {
         const container = scrollContainerRef.current;
@@ -68,49 +72,53 @@ const EpisodeList: React.FC<Props> = ({ episodes, onSelectEpisode, isLoading, ha
                     background: 'var(--bg-secondary)',
                 }}
             >
-                {episodes.map(ep => (
-                    <div
-                        key={ep.id}
-                        style = {{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            padding: '0.5rem 0',
-                            borderBottom: '1px solid var(--border)',
-                        }}
-                    >
-                        <div style={{ textAlign: 'left' }}>
-                            <div style={{ fontWeight: 500 }}>
-                                {ep.title}
-                            </div>
-                            <div style={{
-                                fontSize: '0.85rem',
-                                color: 'var(--text-muted)',
-                                marginTop: '0.2rem',
-                                textAlign: 'left',
-                                paddingLeft: 0,
-                                marginLeft: 0
-                             }}>
-                                {ep.datePublishedPretty}
-                            </div>
-                        </div>
-                        <button
-                            onClick={() => onSelectEpisode(ep)}
-                            style={{
-                                padding: '0.4rem 0.8rem',
-                                borderRadius: '4px',
-                                border: 'none',
-                                background: 'var(--accent)',
-                                color: '#fff',
-                                cursor: 'pointer',
-                                flexShrink: 0,
-                                marginLeft: '1rem'
+                {episodes.map(ep => {
+                    const isSelectingThis = selectingEpisodeId === ep.id;
+                    return (
+                        <div
+                            key={ep.id}
+                            style = {{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '0.5rem 0',
+                                borderBottom: '1px solid var(--border)',
                             }}
                         >
-                            Select
-                        </button>
-                    </div>
-                ))}
+                            <div style={{ textAlign: 'left' }}>
+                                <div style={{ fontWeight: 500 }}>
+                                    {ep.title}
+                                </div>
+                                <div style={{
+                                    fontSize: '0.85rem',
+                                    color: 'var(--text-muted)',
+                                    marginTop: '0.2rem',
+                                    textAlign: 'left',
+                                    paddingLeft: 0,
+                                    marginLeft: 0
+                                 }}>
+                                    {ep.datePublishedPretty}
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => onSelectEpisode(ep)}
+                                disabled={isSelectingThis || selectingEpisodeId !== null}
+                                style={{
+                                    padding: '0.4rem 0.8rem',
+                                    borderRadius: '4px',
+                                    border: 'none',
+                                    background: 'var(--accent)',
+                                    color: '#fff',
+                                    cursor: 'pointer',
+                                    flexShrink: 0,
+                                    marginLeft: '1rem'
+                                }}
+                            >
+                                {isSelectingThis ? 'Selecting...' : 'Select'}
+                            </button>
+                        </div>
+                    );
+                })}
 
                 {isLoading && episodes.length > 0 && (
                     <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)' }}>

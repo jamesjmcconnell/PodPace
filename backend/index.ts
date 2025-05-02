@@ -3,6 +3,7 @@ import { env } from './src/config';
 import { redis as redisConnection } from './src/lib/redis';
 import { server } from './src/server'; // Import the server instance
 import path from 'node:path';
+import { updateJobStatus } from './utils/jobUtils'; // Assuming no shared types needed here directly
 
 // --- Initialization Script ---
 // This file now primarily acts as the entry point for initialization.

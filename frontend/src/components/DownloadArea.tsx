@@ -1,12 +1,11 @@
 import React from 'react';
 
 interface DownloadAreaProps {
-  jobId: string;
-  outputFilename: string;
+  outputFilename: string | null;
   onDownload: () => void;
 }
 
-const DownloadArea: React.FC<DownloadAreaProps> = ({ jobId, outputFilename, onDownload }) => {
+const DownloadArea: React.FC<DownloadAreaProps> = ({ outputFilename, onDownload }) => {
 
   // Remove direct URL construction
   // const downloadUrl = `/api/download/${jobId}`;

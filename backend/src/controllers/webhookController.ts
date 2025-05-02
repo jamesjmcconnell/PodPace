@@ -3,7 +3,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { jsonResponse, errorResponse } from '../../utils/responseUtils'; // Correct path
 import { env } from '../config'; // Correct path
 
-// Define status type locally or import from shared types later
+// Define status type locally if not moved to common
 type SubscriptionStatus = 'active' | 'trialing' | 'past_due' | 'canceled' | 'unpaid' | 'incomplete' | 'incomplete_expired';
 
 // --- Supabase Admin Client (Specific to this controller for now) ---
@@ -29,6 +29,13 @@ const relevantEvents = new Set([
   'customer.subscription.deleted',
 ]);
 
+/**
+ * Handles POST requests from Stripe webhooks.
+ * Verifies the webhook signature and processes relevant subscription events
+ * by updating the Supabase database.
+ * @param req The incoming request object containing the raw body and signature header.
+ * @returns A Response object indicating success (200 OK) or an error (400, 500).
+ */
 export async function handleStripeWebhook(req: Request): Promise<Response> {
     if (!webhookSecret) {
         console.error('[Ctrl:Webhook] Stripe webhook secret not configured.');

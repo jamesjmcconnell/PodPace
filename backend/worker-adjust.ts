@@ -1,86 +1,31 @@
-import { Worker, Job } from 'bullmq';
-import Redis from 'ioredis';
+// Load .env file explicitly for worker process
+import * as dotenv from 'dotenv';
 import path from 'node:path';
+dotenv.config({ path: path.resolve(import.meta.dir, '.env') }); // Load .env from backend directory
+
+import { Worker, Job } from 'bullmq';
 import fs from 'node:fs/promises';
 import { $ } from 'bun'; // Import Bun Shell
 // Import shared interfaces using `import type`
-import type { AdjustJobData, SpeakerWPM, TargetWPM, Segment } from './interfaces';
+import type { AdjustJobData, SpeakerWPM, TargetWPM, Segment } from '~/common/types';
+// Import shared Redis connection and queue name
+import { redis } from './src/lib/redis'; // Correct path
+import { ADJUST_QUEUE_NAME } from './src/queues/adjustQueue'; // Correct path
+import { updateJobStatus, getJobAnalysisData } from './utils/jobUtils'; // Correct path
 
 // --- Configuration ---
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
-const ADJUST_QUEUE_NAME = 'audio-adjust';
 // Assume OUTPUT_DIR is defined globally or passed via job data if needed
-const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(import.meta.dir, 'output');
+import { env } from './src/config'; // Use validated config
+const OUTPUT_DIR = env.OUTPUT_DIR; // Use validated config
 const TEMP_DIR_BASE = path.join(import.meta.dir, 'temp_adjust'); // Base for temporary files
 
-// --- Redis Connection ---
-console.log(`Adjust Worker connecting to Redis at ${REDIS_HOST}:${REDIS_PORT}...`);
-const redisConnection = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    password: REDIS_PASSWORD,
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-});
+// --- Removed Redis Connection Setup ---
 
-redisConnection.on('connect', () => {
-    console.log('Adjust Worker successfully connected to Redis.');
-});
-
-redisConnection.on('error', (err: Error) => {
-    console.error('Adjust Worker Redis connection error:', err);
-    process.exit(1);
-});
-
-// --- Job Status Tracking Helper (Shared logic - refactor possibility) ---
-const getJobStatusKey = (jobId: string) => `job:${jobId}:status`;
-const getJobDataKey = (jobId: string) => `job:${jobId}:data`;
-
-async function updateJobStatus(jobId: string, status: string, data?: Record<string, any>) {
-    console.log(`[Adjust Job ${jobId}] Updating status to ${status}`);
-    try {
-        const multi = redisConnection.multi();
-        multi.hset(getJobStatusKey(jobId), 'status', status, 'updatedAt', String(Date.now()));
-        if (data) {
-            const dataToStore = Object.entries(data).reduce((acc, [key, value]) => {
-                acc[key] = typeof value === 'string' ? value : JSON.stringify(value);
-                return acc;
-            }, {} as Record<string, string>);
-            multi.hset(getJobDataKey(jobId), dataToStore);
-        }
-        await multi.exec();
-    } catch (error) {
-        console.error(`[Adjust Job ${jobId}] Failed to update status to ${status}:`, error);
-    }
-}
-
-// --- Interfaces (Should match data stored by analyze worker/API) ---
-// Remove local definitions - these are now imported
-// interface SpeakerWPM { ... }
-// interface TargetWPM { ... }
-// interface Segment { ... }
-// interface AdjustJobData { ... }
-
-// Helper to get data stored by the analyze worker
-// Uses imported Segment and SpeakerWPM types
-async function getJobAnalysisData(jobId: string): Promise<{ speakers: SpeakerWPM[], segments: Segment[] } | null> {
-    try {
-        const jobData = await redisConnection.hgetall(getJobDataKey(jobId));
-        if (!jobData || !jobData.speakers || !jobData.diarizationSegments) { // Adjust key name if needed
-            console.error(`[Adjust Job ${jobId}] Missing analysis data (speakers or segments) in Redis.`);
-            return null;
-        }
-        return {
-            speakers: JSON.parse(jobData.speakers),
-            segments: JSON.parse(jobData.diarizationSegments), // Adjust key name if needed
-        };
-    } catch (error: any) {
-        console.error(`[Adjust Job ${jobId}] Failed to retrieve/parse analysis data:`, error);
-        return null;
-    }
-}
+// --- Job Status Tracking Helper ---
+// Removed local updateJobStatus, getJobAnalysisData (imported)
 
 // --- Audio Processing Logic ---
 
@@ -244,46 +189,43 @@ async function processAudioAdjustment(jobData: AdjustJobData): Promise<string> {
     }
 }
 
-// --- Worker Implementation --- //
-
-// Uses imported AdjustJobData type
+// --- Worker Implementation ---
 const processAdjustJob = async (job: Job<AdjustJobData>) => {
     const { jobId } = job.data;
-    console.log(`[Adjust Job ${jobId}] Starting adjustment process...`);
+    console.log(`[Worker:Adjust Job ${jobId}] Starting adjustment process...`);
 
     try {
         const finalOutputPath = await processAudioAdjustment(job.data);
-
-        // Update status to COMPLETE and store the output path
+        // Update status using imported helper
         await updateJobStatus(jobId, 'COMPLETE', {
             outputFilePath: finalOutputPath,
         });
-        console.log(`[Adjust Job ${jobId}] Adjustment completed successfully. Output: ${finalOutputPath}`);
+        console.log(`[Worker:Adjust Job ${jobId}] Adjustment completed successfully. Output: ${finalOutputPath}`);
 
     } catch (error: any) {
-        console.error(`[Adjust Job ${jobId}] Adjustment processing failed:`, error);
+        console.error(`[Worker:Adjust Job ${jobId}] Adjustment processing failed:`, error);
+        // Update status using imported helper
         await updateJobStatus(jobId, 'FAILED', { error: error.message || 'Unknown adjustment error' });
-        // Optional: Rethrow error for BullMQ retry logic
-        // throw error;
     }
 };
 
-// --- Worker Initialization --- //
-// Uses imported AdjustJobData type
+// --- Worker Initialization (Use imported queue name and redis connection) ---
+console.log(`[Worker:Adjust] Initializing worker for queue: ${ADJUST_QUEUE_NAME}`);
 const worker = new Worker<AdjustJobData>(ADJUST_QUEUE_NAME, processAdjustJob, {
-    connection: redisConnection,
-    concurrency: 2, // Limit concurrency for CPU/IO intensive ffmpeg/rubberband tasks
+    connection: redis, // Use shared redis connection
+    concurrency: 2,
     removeOnComplete: { count: 1000 },
     removeOnFail: { count: 5000 },
 });
 
+// --- Worker Event Listeners ---
 worker.on('completed', (job: Job, result: any) => {
-    console.log(`[Adjust Job ${job.data.jobId}] Completed successfully.`);
+    console.log(`[Worker:Adjust Job ${job.data.jobId}] Completed successfully.`);
 });
 
 worker.on('failed', (job: Job | undefined, error: Error) => {
     if (job) {
-        console.error(`[Adjust Job ${job.data.jobId}] Failed:`, error);
+        console.error(`[Worker:Adjust Job ${job.data.jobId}] Failed:`, error);
     } else {
         console.error('Adjust Worker encountered a failure with an undefined job:', error);
     }
@@ -293,16 +235,14 @@ worker.on('error', (error: Error) => {
     console.error('Adjust Worker encountered an error:', error);
 });
 
-console.log(`Adjust Worker listening for jobs on queue: ${ADJUST_QUEUE_NAME}`);
+console.log(`[Worker:Adjust] Worker listening for jobs on queue: ${ADJUST_QUEUE_NAME}`);
 
-// --- Graceful Shutdown --- //
+// --- Graceful Shutdown ---
 async function gracefulShutdown(signal: string) {
     console.log(`\nReceived ${signal}, shutting down adjust worker gracefully...`);
     try {
         await worker.close();
         console.log('Adjust BullMQ worker closed.');
-        redisConnection.disconnect();
-        console.log('Adjust Redis connection closed.');
         console.log('Adjust Worker shutdown complete.');
         process.exit(0);
     } catch (error) {

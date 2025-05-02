@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface AudioPlayerProps {
   /** The Job ID to fetch the audio for */

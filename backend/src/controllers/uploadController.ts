@@ -6,7 +6,7 @@ import { checkAndIncrementAnalysisQuota } from '../../utils/quotaUtils'; // Corr
 import { jsonResponse, errorResponse } from '../../utils/responseUtils'; // Correct path
 import { env } from '../config'; // Correct path
 import type { User } from '@supabase/supabase-js';
-import type { UserRole } from '../../interfaces'; // Correct path
+import type { UserRole } from '~/common/types'; // USE ALIAS
 
 // Placeholder import for analyzeAudioQueue - Assuming queues will be in src/queues/
 // import { analyzeAudioQueue } from '../queues/analyzeQueue';
@@ -14,7 +14,15 @@ import type { UserRole } from '../../interfaces'; // Correct path
 const UPLOAD_DIR = env.UPLOAD_DIR; // Use validated config
 const ANALYZE_QUEUE_NAME = 'audio-analyze'; // Keep queue name constant accessible
 
-// --- Upload Handler ---
+/**
+ * Handles POST requests to upload an audio file (via multipart/form-data)
+ * and queue it for analysis.
+ * Requires authentication and performs analysis quota check for FREE users.
+ * @param req The incoming request object.
+ * @param user The authenticated User object (from verifyAuth middleware).
+ * @param role The determined UserRole ('FREE' or 'PAID').
+ * @returns A Response object with the new job ID (202) or an error.
+ */
 export async function handleUpload(req: Request, user: User, role: UserRole): Promise<Response> {
     console.log(`[Ctrl:Upload] Handling POST /api/upload for user ${user.id} (Role: ${role})`);
 

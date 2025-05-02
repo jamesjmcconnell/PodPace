@@ -5,16 +5,23 @@ import { verifyAuth } from '../../middleware/auth';
 import { getUserRole } from '../../middleware/role';
 import { jsonResponse, errorResponse } from '../../utils/responseUtils';
 import { env } from '../config';
-import type { AdjustRequestBody, Segment, UserRole } from '../../interfaces';
+import type { AdjustRequestBody, Segment, UserRole } from '~/common/types';
 import { redis } from '../lib/redis';
 import path from 'node:path';
 import Bun from 'bun';
 import type { User } from '@supabase/supabase-js';
+import { AppError } from '../middleware/validator';
 
 // Placeholder import - Assuming queues will be in src/queues/
 // import { adjustAudioQueue } from '../queues/adjustQueue';
 
-// --- Job Status Handler ---
+/**
+ * Handles GET requests to retrieve the status and associated data for a job.
+ * Includes role and quota information for authenticated users.
+ * @param req The incoming request object.
+ * @param params Object containing the extracted `jobId` from the route.
+ * @returns A Response object with the job status information or an error.
+ */
 export async function handleStatus(req: Request, params: { jobId: string }): Promise<Response> {
     const { jobId } = params;
     console.log(`[Ctrl:Job] Handling GET /api/jobs/${jobId}/status`);
@@ -53,29 +60,34 @@ export async function handleStatus(req: Request, params: { jobId: string }): Pro
     return jsonResponse(responseData);
 }
 
-// --- Job Adjustment Handler ---
+/**
+ * Handles POST requests to queue an audio adjustment job.
+ * Assumes the router has already performed validation and quota checks.
+ * @param req The incoming request object (used to parse body).
+ * @param params Object containing the extracted `jobId` from the route.
+ * @returns A Response object confirming queuing or an error.
+ */
 export async function handleAdjust(req: Request, params: { jobId: string }): Promise<Response> {
     const { jobId } = params;
     console.log(`[Ctrl:Job] Handling POST /api/jobs/${jobId}/adjust`);
     const jobInfo = await getJobInfo(jobId);
 
     if (!jobInfo) {
-        return errorResponse('Job not found', 404);
+        throw new AppError('Job not found', 404);
     }
 
     const currentStatus = jobInfo.status;
     if (currentStatus !== 'READY_FOR_INPUT' && currentStatus !== 'FAILED') {
-        return errorResponse(`Job status is ${currentStatus || 'Unknown'}, cannot start/retry adjustment.`, 409);
+        throw new AppError(`Job status is ${currentStatus || 'Unknown'}, cannot start adjustment.`, 409);
     }
 
     try {
         const body = await req.json() as AdjustRequestBody;
         if (!body || !Array.isArray(body.targets) || body.targets.length === 0) {
-            return errorResponse('Invalid adjustment targets provided.', 400);
+            throw new AppError('Invalid adjustment targets provided in body.', 400);
         }
         const targets = body.targets;
 
-        // Update status and clear any previous error
         await updateJobStatus(jobId, 'QUEUED_FOR_ADJUSTMENT', { targets: JSON.stringify(targets), error: null });
 
         // Add job to queue - COMMENTED OUT UNTIL PHASE 3
@@ -93,12 +105,17 @@ export async function handleAdjust(req: Request, params: { jobId: string }): Pro
         return jsonResponse({ status: 'Adjustment queued' }, 202);
 
     } catch (error: any) {
-        console.error(`[Ctrl:Job] Error queuing adjustment for job ${jobId}:`, error);
-        return errorResponse('Failed to queue adjustment task.', 500);
+        console.error(`[Ctrl:Job] Error during adjustment processing for job ${jobId}:`, error);
+        throw error;
     }
 }
 
-// --- Job Download Handler ---
+/**
+ * Handles GET requests to download the processed audio file for a completed job.
+ * @param req The incoming request object.
+ * @param params Object containing the extracted `jobId` from the route.
+ * @returns A Response object containing the audio file stream or an error.
+ */
 export async function handleDownload(req: Request, params: { jobId: string }): Promise<Response> {
     const { jobId } = params;
     console.log(`[Ctrl:Job] Handling GET /api/jobs/${jobId}/download`);
@@ -141,7 +158,12 @@ export async function handleDownload(req: Request, params: { jobId: string }): P
     }
 }
 
-// --- Job Preview Handler ---
+/**
+ * Handles GET requests to generate and stream a short audio preview for a specific speaker within a job.
+ * @param req The incoming request object.
+ * @param params Object containing the extracted `jobId` and `speakerId`.
+ * @returns A Response object containing the audio preview stream or an error.
+ */
 export async function handlePreview(req: Request, params: { jobId: string; speakerId: string }): Promise<Response> {
     const { jobId, speakerId } = params;
     console.log(`[Ctrl:Job] Request for preview job ${jobId}, speaker ${speakerId}`);

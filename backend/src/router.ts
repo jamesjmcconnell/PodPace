@@ -7,11 +7,21 @@ import * as proxyController from './controllers/proxyController';
 import { verifyAuth } from '../middleware/auth';
 import { getUserRole } from '../middleware/role';
 import type { User } from '@supabase/supabase-js';
-import type { UserRole } from '../interfaces';
+import type { UserRole } from '~/common/types';
 import Redis from 'ioredis'; // Needed for podcast episodes handler temporary solution
+import { validateBody, AppError } from './middleware/validator';
+import { z } from 'zod';
 
 // Define the main router function type
 type RouterFunction = (req: Request) => Promise<Response>;
+
+// --- Zod Schemas ---
+const adjustBodySchema = z.object({
+    targets: z.array(z.object({
+        id: z.string(),
+        target_wpm: z.number().int().min(50).max(400) // Example validation
+    })).min(1) // Require at least one target
+});
 
 export const mainRouter: RouterFunction = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -73,7 +83,7 @@ export const mainRouter: RouterFunction = async (req: Request): Promise<Response
         const jobId = pathSegments[2];
         const action = pathSegments[3];
 
-        // Auth is required for ALL job actions
+        // Auth needs to happen before controller logic that uses user/role
         const user = await verifyAuth(req);
         if (!user) return errorResponse('Unauthorized', 401);
         const role = await getUserRole(user);
@@ -85,14 +95,24 @@ export const mainRouter: RouterFunction = async (req: Request): Promise<Response
         }
         // POST /api/jobs/:jobId/adjust
         if (action === 'adjust' && method === 'POST') {
+            // ** 1. Validate Body **
+            const validatedBody = await validateBody(adjustBodySchema)(req);
+            // If validation failed, validateBody throws, caught by server error handler
+
+            // ** 2. Check Quota **
              if (role === 'FREE') {
                  const { checkAndIncrementAdjustmentQuota } = await import('../utils/quotaUtils');
                  const quotaAllowed = await checkAndIncrementAdjustmentQuota(user.id);
                  if (!quotaAllowed) {
-                     return errorResponse('Daily free adjustment limit reached.', 403);
+                     // Throw an AppError for the handler to catch
+                     throw new AppError('Daily free adjustment limit reached.', 403);
                  }
              }
-            return jobController.handleAdjust(req, { jobId });
+
+            // ** 3. Call Controller **
+            // Pass validated body to controller if needed (or modify controller later)
+            // For now, controller re-parses, but validation already happened.
+            return jobController.handleAdjust(req, { jobId }); // Pass original req for now
         }
         // GET /api/jobs/:jobId/download
         if (action === 'download' && method === 'GET') {

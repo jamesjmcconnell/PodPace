@@ -1,6 +1,6 @@
 import { env } from './config'; // Import validated env
 import { mainRouter } from './router'; // Import the main router function
-// import { errorHandler } from './middleware/errorHandler'; // Import error handler (when created)
+import { errorHandler } from './middleware/errorHandler'; // Import the error handler
 
 console.log('[Server] Initializing...');
 
@@ -13,26 +13,16 @@ const serverOptions = {
             // Pass the request to the main router
             return await mainRouter(req);
         } catch (error: any) {
-            console.error("[Server] Unhandled fetch error:", error);
-            // TODO: Integrate centralized error handler middleware later
-            // return errorHandler(error, req);
-            // Basic fallback error response for now
-            return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' }
-            });
+            // Use the centralized error handler
+            console.error("[Server] Unhandled fetch error passed to handler:", error);
+            return errorHandler(error, req);
         }
     },
 
     error(error: Error): Response {
-        // This handles errors *outside* the fetch handler (e.g., during startup?)
-        console.error("[Server] Bun internal error:", error);
-        // TODO: Integrate centralized error handler middleware later
-        // return errorHandler(error);
-        return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' }
-        });
+        // Use the centralized error handler for Bun internal errors too
+        console.error("[Server] Bun internal error passed to handler:", error);
+        return errorHandler(error);
     },
 };
 

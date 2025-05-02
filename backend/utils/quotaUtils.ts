@@ -2,7 +2,13 @@ import { redis } from '../src/lib/redis';
 
 // --- Quota Helpers ---
 
-// Helper to GET current quota count without incrementing
+/**
+ * Gets the current usage count for a specific quota type for a user today (UTC).
+ * Does not increment the count.
+ * @param userId The ID of the user.
+ * @param quotaType The type of quota ('analysis' or 'adjust').
+ * @returns A promise resolving to the current count (0 if key doesn't exist), or 999 on Redis error.
+ */
 export async function getQuotaCount(userId: string, quotaType: 'analysis' | 'adjust'): Promise<number> {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
     const key = `quota:${quotaType}:free:${userId}:${today}`;
@@ -15,7 +21,12 @@ export async function getQuotaCount(userId: string, quotaType: 'analysis' | 'adj
     }
 }
 
-// Checks and increments the daily ANALYSIS quota (Limit: 3)
+/**
+ * Checks if the user has remaining analysis quota for today (UTC) and increments it.
+ * Sets TTL on first increment.
+ * @param userId The user ID.
+ * @returns A promise resolving to true if quota was available and incremented, false otherwise.
+ */
 export async function checkAndIncrementAnalysisQuota(userId: string): Promise<boolean> {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
     const key = `quota:analysis:free:${userId}:${today}`;
@@ -41,7 +52,12 @@ export async function checkAndIncrementAnalysisQuota(userId: string): Promise<bo
     }
 }
 
-// Checks and increments the daily ADJUSTMENT quota (Limit: 1)
+/**
+ * Checks if the user has remaining adjustment quota for today (UTC) and increments it.
+ * Sets TTL on first increment.
+ * @param userId The user ID.
+ * @returns A promise resolving to true if quota was available and incremented, false otherwise.
+ */
 export async function checkAndIncrementAdjustmentQuota(userId: string): Promise<boolean> {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
     const key = `quota:adjust:free:${userId}:${today}`; // New key pattern

@@ -10,7 +10,6 @@
     "dev": "concurrently \"bun run start:api\" \"bun run start:worker:analyze\" \"bun run start:worker:adjust\" \"bun run start:frontend\""
   },
   "devDependencies": {
-    "@types/bun": "^1.2.9",
     "concurrently": "^9.1.2",
     "typescript": "^5.8.3"
   },

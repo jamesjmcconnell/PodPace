@@ -1,6 +1,11 @@
 import { jsonResponse, errorResponse } from '../../utils/responseUtils'; // Correct path
 
-// --- Audio Proxy Handler ---
+/**
+ * Handles GET requests to proxy audio fetches from external URLs.
+ * Used by the frontend to bypass CORS issues when selecting podcast episodes.
+ * @param req The incoming request object, expects a 'url' query parameter.
+ * @returns A Response object streaming the audio content or an error.
+ */
 export async function handleAudioProxy(req: Request): Promise<Response> {
     const urlParam = new URL(req.url).searchParams.get('url');
     if (!urlParam) {

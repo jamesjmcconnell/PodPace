@@ -1,73 +1,29 @@
-import { Worker, Job } from 'bullmq';
-import Redis from 'ioredis';
+import * as dotenv from 'dotenv';
 import path from 'node:path';
+dotenv.config({ path: path.resolve(import.meta.dir, '.env') }); // Load .env from backend directory
+
+import { Worker, Job } from 'bullmq';
 import fs from 'node:fs/promises';
-// Import shared interfaces using `import type`
+import { $ } from 'bun';
+import type { AnalyzeJobData, SpeakerWPM, Segment } from '~/common/types';
 import type {
-    AnalyzeJobData,
-    SpeakerWPM,
-    Segment,
     Utterance,
     AssemblyAIUploadResponse,
     AssemblyAISubmitResponse,
     AssemblyAITranscriptResponse
 } from './interfaces';
+import { redis } from './src/lib/redis';
+import { ANALYZE_QUEUE_NAME } from './src/queues/analyzeQueue';
+import { updateJobStatus } from './utils/jobUtils';
 
 // --- Configuration ---
-const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
-const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
-const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
 const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY;
-const ANALYZE_QUEUE_NAME = 'audio-analyze';
 const ASSEMBLYAI_API_BASE = 'https://api.assemblyai.com/v2';
 
 // --- Basic Checks ---
 if (!ASSEMBLYAI_API_KEY) {
     console.error('FATAL ERROR: ASSEMBLYAI_API_KEY environment variable is not set.');
     process.exit(1);
-}
-
-// --- Redis Connection (Separate connection for worker recommended) ---
-console.log(`Worker connecting to Redis at ${REDIS_HOST}:${REDIS_PORT}...`);
-const redisConnection = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    password: REDIS_PASSWORD,
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-});
-
-redisConnection.on('connect', () => {
-    console.log('Worker successfully connected to Redis.');
-});
-
-redisConnection.on('error', (err: Error) => {
-    console.error('Worker Redis connection error:', err);
-    // Worker might not be able to function without Redis
-    process.exit(1);
-});
-
-// --- Job Status Tracking Helper (from index.ts - consider sharing via a module) ---
-const getJobStatusKey = (jobId: string) => `job:${jobId}:status`;
-const getJobDataKey = (jobId: string) => `job:${jobId}:data`;
-
-async function updateJobStatus(jobId: string, status: string, data?: Record<string, any>) {
-    console.log(`[Job ${jobId}] Updating status to ${status}`);
-    try {
-        const multi = redisConnection.multi();
-        multi.hset(getJobStatusKey(jobId), 'status', status, 'updatedAt', String(Date.now()));
-        if (data) {
-            const dataToStore = Object.entries(data).reduce((acc, [key, value]) => {
-                acc[key] = typeof value === 'string' ? value : JSON.stringify(value);
-                return acc;
-            }, {} as Record<string, string>);
-            multi.hset(getJobDataKey(jobId), dataToStore);
-        }
-        await multi.exec();
-    } catch (error) {
-        console.error(`[Job ${jobId}] Failed to update status to ${status}:`, error);
-        // Don't throw here, as the main job might still proceed or fail later
-    }
 }
 
 // --- AssemblyAI API Helpers ---
@@ -312,11 +268,12 @@ const processAnalyzeJob = async (job: Job<AnalyzeJobData>) => {
 };
 
 // --- Worker Initialization --- //
+console.log(`[Worker:Analyze] Initializing worker for queue: ${ANALYZE_QUEUE_NAME}`);
 const worker = new Worker<AnalyzeJobData>(ANALYZE_QUEUE_NAME, processAnalyzeJob, {
-    connection: redisConnection,
-    concurrency: 5, // Process up to 5 jobs concurrently (adjust as needed)
-    removeOnComplete: { count: 1000 }, // Keep logs of last 1000 completed jobs
-    removeOnFail: { count: 5000 },    // Keep logs of last 5000 failed jobs
+    connection: redis,
+    concurrency: 2,
+    removeOnComplete: { count: 1000 },
+    removeOnFail: { count: 5000 },
 });
 
 worker.on('completed', (job: Job, result: any) => {
@@ -343,8 +300,6 @@ async function gracefulShutdown(signal: string) {
     try {
         await worker.close();
         console.log('BullMQ worker closed.');
-        redisConnection.disconnect();
-        console.log('Redis connection closed.');
         console.log('Worker shutdown complete.');
         process.exit(0);
     } catch (error) {
