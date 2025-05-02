@@ -1,4 +1,5 @@
-import { PodcastFeed } from './interfaces';
+import React from 'react';
+import type { PodcastFeed } from '~/common/types';
 
 interface Props {
     feeds: PodcastFeed[];

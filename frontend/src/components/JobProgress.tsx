@@ -21,9 +21,9 @@ const JobProgress: React.FC<JobProgressProps> = ({ jobId, onStatusUpdate, curren
     setError(null); // Clear previous polling errors
 
     try {
-      const apiUrl = '/api'; // Use relative path for Vite proxy
-      console.log(`[JobProgress] Fetching: ${apiUrl}/status/${jobId}`);
-      const response = await fetch(`${apiUrl}/status/${jobId}`, {
+      const apiUrl = `/api/jobs/${jobId}/status`; // Use the correct API path
+      console.log(`[JobProgress] Fetching: ${apiUrl}`);
+      const response = await fetch(apiUrl, {
         headers: getAuthHeaders() // Use the passed function
       });
       const result = await response.json();

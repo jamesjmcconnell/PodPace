@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type { User } from '@supabase/supabase-js';
+import type { UserRole } from '~/common/types'; // USE ALIAS
 
 let supabaseAdmin: SupabaseClient | null = null;
 
@@ -14,8 +15,14 @@ function getSupabaseAdminClient(): SupabaseClient {
   return supabaseAdmin;
 }
 
-export type UserRole = 'VISITOR' | 'FREE' | 'PAID';
-
+/**
+ * Determines the role ('FREE' or 'PAID') for an AUTHENTICATED user
+ * by checking their subscription status in the database.
+ * Throws an error if the database check fails.
+ * NOTE: Does not handle 'VISITOR' role; that's determined by lack of authentication.
+ * @param user The authenticated Supabase User object.
+ * @returns Promise resolving to 'FREE' or 'PAID'.
+ */
 export async function getUserRole(user: User): Promise<UserRole> {
   // Query subscriptions table for active status
   try {

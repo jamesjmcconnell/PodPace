@@ -1,0 +1,45 @@
+name: PodPace CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - unshitify # Add your feature branch here
+  pull_request:
+    branches:
+      - main
+      - master # Add master as a target branch
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+
+    # Install dependencies using Bun
+    - name: Install Backend Dependencies
+      run: cd backend && bun install
+    - name: Install Frontend Dependencies
+      run: cd frontend && bun install
+
+    - name: Lint Frontend
+      run: cd frontend && bunx eslint src --max-warnings=0
+
+    - name: Run Backend Tests
+      run: cd backend && bun test --coverage
+      # Add frontend tests if/when available
+      # run: cd frontend && bun test --coverage
+
+    - name: Verify Docker Build
+      # Assumes Dockerfile is at the root. Adjust path if needed.
+      run: docker build -t podpace:ci -f Dockerfile .
+      # Create a dummy Dockerfile if it doesn't exist yet to avoid failure
+      # Or comment this step out until Dockerfile is created in Phase 7

@@ -12,11 +12,9 @@ import EpisodeList from './components/EpisodeList'
 import LoginPage from './pages/LoginPage'
 import AudioPlayer from './components/AudioPlayer'
 import { useAuth } from './context/AuthContext'
-
-// Import frontend interfaces from the correct relative path
-import type { SpeakerWPM, JobStatus, PodcastFeed, PodcastEpisode } from './interfaces'
-
-
+import Banner from './components/Banner'
+// Import shared types using alias
+import type { JobStatus, PodcastFeed, PodcastEpisode, UserRole, QuotaInfo } from '~/common/types'
 
 // Define types for our state
 interface SpeakerInfo {
@@ -45,14 +43,15 @@ function App() {
   const [feeds, setFeeds] = useState<PodcastFeed[]>([]);
   const [selectedFeed, setSelectedFeed] = useState<PodcastFeed | null>(null);
   const [episodes, setEpisodes] = useState<PodcastEpisode[]>([]);
-  const [selectedEpisode, setSelectedEpisode] = useState<PodcastEpisode|null>(null);
-  // New state for episode loading and pagination
   const [isLoadingEpisodes, setIsLoadingEpisodes] = useState<boolean>(false);
   const [hasMoreEpisodes, setHasMoreEpisodes] = useState<boolean>(false);
   const [lastEpisodeTimestamp, setLastEpisodeTimestamp] = useState<number | null>(null);
   const EPISODE_PAGE_SIZE = 20; // How many episodes to fetch per batch
-  // New state for welcome message visibility
   const [showWelcomeMessage, setShowWelcomeMessage] = useState<boolean>(true);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [quotaStatus, setQuotaStatus] = useState<QuotaInfo | null>(null);
+  const [selectingEpisodeId, setSelectingEpisodeId] = useState<string | null>(null);
+  const [processingEpisodeTitle, setProcessingEpisodeTitle] = useState<string | null>(null);
 
   // Helper function to get auth headers
   const getAuthHeaders = (): Record<string, string> => {
@@ -85,30 +84,44 @@ function App() {
   };
 
   // Example: To be called by JobProgress when status updates
-  const handleStatusUpdate = (statusUpdate: any) => { // Type this based on actual API response
-    setJobStatus(statusUpdate.status as JobStatus); // Assuming API returns status field
+  const handleStatusUpdate = (statusUpdate: any) => {
+    console.log('[App] Received status update:', statusUpdate);
+    setJobStatus(statusUpdate.status as JobStatus);
+
+    // --- Update Role and Quota State ---
+    if (statusUpdate.role) {
+        setUserRole(statusUpdate.role as UserRole);
+    }
+    if (statusUpdate.quota) {
+        setQuotaStatus(statusUpdate.quota as QuotaInfo);
+    }
+    // Clear role/quota if they disappear from status (e.g., user logs out mid-poll?)
+    if (!statusUpdate.role) setUserRole(null);
+    if (!statusUpdate.quota) setQuotaStatus(null);
+    // ------------------------------------
+
     if (statusUpdate.status === 'READY_FOR_INPUT' && statusUpdate.speakers) {
-      // Attempt to parse speakers if it's a string, otherwise use directly
-      try {
-          const speakers = typeof statusUpdate.speakers === 'string'
-            ? JSON.parse(statusUpdate.speakers)
-            : statusUpdate.speakers;
-          if (Array.isArray(speakers)) {
-             setSpeakerData(speakers);
-          }
-      } catch (e) {
-          console.error("Failed to parse speaker data:", e);
-          setError('Failed to parse speaker data from backend.');
-          setJobStatus('FAILED');
-      }
+       // Attempt to parse speakers if it's a string, otherwise use directly
+       try {
+           const speakers = typeof statusUpdate.speakers === 'string'
+             ? JSON.parse(statusUpdate.speakers)
+             : statusUpdate.speakers;
+           if (Array.isArray(speakers)) {
+              setSpeakerData(speakers);
+           }
+       } catch (e) {
+           console.error("Failed to parse speaker data:", e);
+           setError('Failed to parse speaker data from backend.');
+           setJobStatus('FAILED');
+       }
     }
     if (statusUpdate.status === 'FAILED' && statusUpdate.error) {
-      setError(statusUpdate.error);
+        setError(statusUpdate.error);
     }
-     if (statusUpdate.status === 'COMPLETE' && statusUpdate.outputFilePath) {
+    if (statusUpdate.status === 'COMPLETE' && statusUpdate.outputFilePath) {
        // Extract filename for download link construction
        setOutputFilename(statusUpdate.outputFilePath.split('/').pop() || null);
-     }
+    }
   };
 
   // Handler for when adjustment is submitted
@@ -123,11 +136,12 @@ function App() {
   const handleReset = () => {
     setJobId(null);
     setJobStatus('IDLE');
-    setSelectedEpisode(null);
-    setSpeakerData([]);
+    setSelectedFeed(null);
+    setEpisodes([]);
     setError(null);
     setIsLoading(false);
     setOutputFilename(null);
+    setProcessingEpisodeTitle(null);
   };
 
   const handlePodcastSearch = async (query: string) => {
@@ -200,16 +214,18 @@ function App() {
 
   // Function to load the next batch of episodes
   const loadMoreEpisodes = async () => {
+    // Guard clause (no changes needed here)
     if (!selectedFeed || isLoadingEpisodes || !hasMoreEpisodes || lastEpisodeTimestamp === null) {
-        console.log('[loadMoreEpisodes] Skipping: Not ready or no more episodes.');
-        return; // Don't load if already loading, no more pages, or initial load pending
+        console.log(`[loadMoreEpisodes] Skipping: isLoading=${isLoadingEpisodes}, hasMore=${hasMoreEpisodes}, feed=${!!selectedFeed}, since=${lastEpisodeTimestamp}`);
+        return;
     }
 
-    console.log(`[loadMoreEpisodes] Loading more for feed ${selectedFeed.id} since ${lastEpisodeTimestamp}`);
+    console.log(`[loadMoreEpisodes] START: Setting isLoadingEpisodes=true. Since: ${lastEpisodeTimestamp}`);
     setIsLoadingEpisodes(true);
-    setError(null); // Clear previous errors
+    setError(null);
 
     try {
+        // --- Fetching ---
         const apiUrl = '/api';
         const res = await fetch(`${apiUrl}/podcasts/episodes?feedId=${encodeURIComponent(selectedFeed.id)}&max=${EPISODE_PAGE_SIZE}&since=${lastEpisodeTimestamp}`);
         if (!res.ok) {
@@ -217,91 +233,123 @@ function App() {
             throw new Error(errorData.error || `Load more failed (${res.status})`);
         }
         const data = await res.json();
-        console.log('[loadMoreEpisodes] got episodes response:', data);
+        console.log('[loadMoreEpisodes] API call finished. Items received:', data.episodes?.length || 0);
 
         const newEpisodes: PodcastEpisode[] = (data.episodes || []).map((ep: any) => ({
-          id: String(ep.id), // Ensure ID is a string
-          title: ep.title,
-          datePublished: parseInt(ep.datePublished, 10), // Parse the timestamp as integer
-          datePublishedPretty: ep.datePublishedPretty, // Map the pretty date string
-          audioUrl: ep.audioUrl,
+            id: String(ep.id),
+            title: ep.title,
+            datePublished: parseInt(ep.datePublished, 10),
+            datePublishedPretty: ep.datePublishedPretty,
+            audioUrl: ep.audioUrl,
         }));
 
-        // Append new episodes to the existing list
-        setEpisodes(prevEpisodes => [...prevEpisodes, ...newEpisodes]);
+        // --- Processing & State Update ---
+        // Get the current list *before* updating
+        const currentEpisodes = episodes;
+        const combined = [...currentEpisodes, ...newEpisodes];
 
-        // Update pagination state: More exist if the API returned new episodes
-        setHasMoreEpisodes(newEpisodes.length > 0);
-        if (newEpisodes.length > 0) {
-           setLastEpisodeTimestamp(newEpisodes[newEpisodes.length - 1].datePublished);
+        // Deduplicate
+        const episodeMap = new Map<string, PodcastEpisode>();
+        combined.forEach(ep => {
+            episodeMap.set(ep.id, ep);
+        });
+        const uniqueEpisodes = Array.from(episodeMap.values());
+        console.log(`[loadMoreEpisodes] Combined: ${combined.length}, Unique: ${uniqueEpisodes.length}`);
+
+        // Determine if new content was actually added after deduplication
+        const newContentAdded = uniqueEpisodes.length > currentEpisodes.length;
+        const moreEpisodesMightExist = newEpisodes.length > 0; // API returned something
+
+        // Update state *once* with the final list
+        setEpisodes(uniqueEpisodes);
+        console.log(`[loadMoreEpisodes] setEpisodes called with ${uniqueEpisodes.length} unique episodes.`);
+
+        // Update pagination state based on whether new unique content was added
+        // and whether the API indicated more might exist (by returning items)
+        const nextHasMore = newContentAdded && moreEpisodesMightExist;
+        console.log(`[loadMoreEpisodes] Updating hasMoreEpisodes to: ${nextHasMore}`);
+        setHasMoreEpisodes(nextHasMore);
+
+        // Update timestamp only if new unique content was added and more might exist
+        if (nextHasMore && uniqueEpisodes.length > 0) {
+           const newTimestamp = uniqueEpisodes[uniqueEpisodes.length - 1].datePublished;
+           console.log(`[loadMoreEpisodes] Updating lastEpisodeTimestamp to: ${newTimestamp}`);
+           setLastEpisodeTimestamp(newTimestamp);
+        } else {
+            console.log(`[loadMoreEpisodes] Not updating lastEpisodeTimestamp.`);
         }
 
     } catch (e: any) {
+        console.error('[loadMoreEpisodes] Error caught:', e);
         setError(e.message);
         setHasMoreEpisodes(false); // Stop trying on error
     } finally {
+        console.log('[loadMoreEpisodes] FINALLY: Setting isLoadingEpisodes=false.');
         setIsLoadingEpisodes(false);
     }
   };
 
   const handleEpisodeSelect = async (ep: PodcastEpisode) => {
+    setSelectingEpisodeId(ep.id);
+    setError(null);
+    setProcessingEpisodeTitle(ep.title);
+
     try {
-        setError(null);
-        setIsLoading(true);
-        setSelectedEpisode(ep);
+      // Keep track of the selected episode locally within the function scope
+      const currentSelectedEpisode = ep;
+      console.log(`[App] Selected episode: ${currentSelectedEpisode.title} (ID: ${currentSelectedEpisode.id})`);
 
-        // Fetch audio via backend proxy to avoid CORS
-        console.log(`[App] Requesting proxy for audio: ${ep.audioUrl}`);
-        const proxyUrl = `/api/proxy/audio?url=${encodeURIComponent(ep.audioUrl)}`;
-        const audioResp = await fetch(proxyUrl);
+      // Fetch audio via backend proxy to avoid CORS
+      console.log(`[App] Requesting proxy for audio: ${ep.audioUrl}`);
+      const proxyUrl = `/api/proxy/audio?url=${encodeURIComponent(ep.audioUrl)}`;
+      const audioResp = await fetch(proxyUrl);
 
-        if (!audioResp.ok) {
-            // Try to get error message from proxy if possible
-            const errorText = await audioResp.text().catch(() => `Proxy fetch failed with status ${audioResp.status}`);
-            console.error(`[App] Proxy fetch failed: ${audioResp.status}`, errorText);
-            // Attempt to parse JSON, fallback to text
-            let errorMessage = `Proxy fetch failed (${audioResp.status})`;
-            try {
-                const errorJson = JSON.parse(errorText);
-                if (errorJson.error) errorMessage = errorJson.error;
-            } catch { /* Ignore JSON parse error */ }
-            throw new Error(errorMessage);
-        }
-        console.log(`[App] Proxy fetch successful, getting blob.`);
-        const blob = await audioResp.blob();
+      if (!audioResp.ok) {
+          // Try to get error message from proxy if possible
+          const errorText = await audioResp.text().catch(() => `Proxy fetch failed with status ${audioResp.status}`);
+          console.error(`[App] Proxy fetch failed: ${audioResp.status}`, errorText);
+          // Attempt to parse JSON, fallback to text
+          let errorMessage = `Proxy fetch failed (${audioResp.status})`;
+          try {
+              const errorJson = JSON.parse(errorText);
+              if (errorJson.error) errorMessage = errorJson.error;
+          } catch { /* Ignore JSON parse error */ }
+          throw new Error(errorMessage);
+      }
+      console.log(`[App] Proxy fetch successful, getting blob.`);
+      const blob = await audioResp.blob();
 
-        // Proceed with upload using the blob from the proxy
-        const form = new FormData();
-        const safeTitle = ep.title.replace(/[^a-z0-9]/gi, '_');
-        form.append('audioFile', blob, `${safeTitle}.mp3`);
+      // Proceed with upload using the blob from the proxy
+      const form = new FormData();
+      const safeTitle = ep.title.replace(/[^a-z0-9]/gi, '_');
+      form.append('audioFile', blob, `${safeTitle}.mp3`);
 
-        const apiUrl = '/api';
-        console.log('[App] Uploading blob from proxy...');
-        const uploadRes = await fetch(`${apiUrl}/upload`, {
-            method: 'POST',
-            headers: {
-                ...getAuthHeaders()
-            },
-            body: form,
-        });
-        if (!uploadRes.ok) {
-            const errorData = await uploadRes.json().catch(() => ({ error: `Upload failed (${uploadRes.status})` }));
-            throw new Error(errorData.error || `Upload failed (${uploadRes.status})`);
-        }
-        const result = await uploadRes.json();
-        console.log('[App] Upload successful after proxy.');
-        handleUploadSuccess(result.job_id);
-        setSelectedFeed(null);
-        setFeeds([]);
-        setEpisodes([]);
-        setMode('UPLOAD');
+      const apiUrl = '/api';
+      console.log('[App] Uploading blob from proxy...');
+      const uploadRes = await fetch(`${apiUrl}/upload`, {
+          method: 'POST',
+          headers: {
+              ...getAuthHeaders()
+          },
+          body: form,
+      });
+      if (!uploadRes.ok) {
+          const errorData = await uploadRes.json().catch(() => ({ error: `Upload failed (${uploadRes.status})` }));
+          throw new Error(errorData.error || `Upload failed (${uploadRes.status})`);
+      }
+      const result = await uploadRes.json();
+      console.log('[App] Upload successful after proxy.');
+      handleUploadSuccess(result.job_id);
+      setSelectedFeed(null);
+      setFeeds([]);
+      setEpisodes([]);
+      setMode('UPLOAD');
     } catch (e: any) {
         console.error('[App] Error during episode selection/upload:', e);
         setError(e.message);
-        // Reset relevant state on error?
-        setSelectedEpisode(null);
+        setProcessingEpisodeTitle(null);
     } finally {
-        setIsLoading(false);
+        setSelectingEpisodeId(null);
     }
   }
 
@@ -359,12 +407,14 @@ function App() {
 
   // --- Auth State Handling ---
   useEffect(() => {
-    // When user logs out, reset the application state
+    // Reset app state on logout, including role/quota
     if (!authLoading && !session) {
-      console.log('[App] User logged out or initial state, resetting app state.');
-      handleReset(); // Reuse existing reset function
+        console.log('[App] User logged out, resetting app state.');
+        handleReset();
+        setUserRole(null); // Clear role on logout
+        setQuotaStatus(null); // Clear quota on logout
     }
-  }, [session, authLoading]); // Depend on session and loading state
+  }, [session, authLoading]);
 
   // Show loading indicator while checking auth state
   if (authLoading) {
@@ -391,6 +441,26 @@ function App() {
         </header>
 
         <ErrorMessage message={error} />
+        {/* --- Quota/Status Banners --- */}
+        {userRole === 'FREE' && quotaStatus && (
+            <>
+                {quotaStatus.analysis.remaining <= 1 && quotaStatus.analysis.remaining > 0 && (
+                     <Banner
+                        message={`Analysis quota low: ${quotaStatus.analysis.remaining} remaining today.`}
+                        type="warning"
+                     />
+                )}
+                 {quotaStatus.analysis.remaining <= 0 && (
+                     <Banner
+                        message={`Daily analysis limit (${quotaStatus.analysis.limit}/day) reached. Upgrade for unlimited.`}
+                        type="error"
+                     />
+                )}
+                {/* Adjustment quota message is handled inside SpeakerAdjuster for now */}
+            </>
+        )}
+        {/* ------------------------- */}
+
         {/* Loading indicators */}
         {isLoadingEpisodes && episodes.length === 0 && <p>Loading Episodes…</p>}
         {isLoading && jobStatus !== 'FAILED' && episodes.length === 0 && !isLoadingEpisodes && <p>Uploading…</p>}
@@ -412,6 +482,11 @@ function App() {
                         <span>Welcome, {user?.email || 'User'}!</span>
                         <button onClick={handleDismissWelcome} style={styles.closeButton}>&times;</button>
                     </div>
+                )}
+
+                {/* Analysis Quota Check for Episode Selection */}
+                {(userRole === 'FREE' && quotaStatus?.analysis.remaining === 0) && (
+                    <p style={{color: 'orange'}}>Daily analysis limit reached.</p>
                 )}
 
                 <div className="mode-toggle">
@@ -458,10 +533,11 @@ function App() {
                 </div>
                 <EpisodeList
                   episodes={episodes}
-                  onSelectEpisode={handleEpisodeSelect}
+                  onSelectEpisode={ (userRole === 'FREE' && (quotaStatus?.analysis?.remaining ?? 0) <= 0) ? () => {} : handleEpisodeSelect }
                   isLoading={isLoadingEpisodes}
                   hasMore={hasMoreEpisodes}
                   onLoadMore={loadMoreEpisodes}
+                  selectingEpisodeId={selectingEpisodeId}
                 />
               </>
             )}
@@ -471,10 +547,10 @@ function App() {
         {/* --- Active Job State Rendering --- */}
         {jobStatus !== 'IDLE' && (
           <>
-            {/* Show the selected episode title */}
-            {selectedEpisode && (
+            {/* Show the stored processing episode title */}
+            {processingEpisodeTitle && (
               <h3 style={{ margin: '1rem 0' }}>
-                Processing episode: "{selectedEpisode.title}"
+                Processing episode: "{processingEpisodeTitle}"
               </h3>
             )}
 
@@ -492,23 +568,28 @@ function App() {
                 onSubmit={handleAdjustmentSubmit}
                 onError={handleUploadError}
                 getAuthHeaders={getAuthHeaders}
+                userRole={userRole}
+                quotaStatus={quotaStatus}
               />
             )}
 
             {/* Final download area with completed title */}
             {jobStatus === 'COMPLETE' && jobId && outputFilename && (
               <>
-                {selectedEpisode && (
+                {processingEpisodeTitle && (
                   <h3 style={{ margin: '1rem 0' }}>
-                    Finished: "{selectedEpisode.title}"
+                    Finished: "{processingEpisodeTitle}"
                   </h3>
                 )}
                 <DownloadArea
-                  jobId={jobId}
                   outputFilename={outputFilename}
                   onDownload={handleDownloadClick}
                 />
-                <AudioPlayer src={`/api/download/${jobId}`} />
+                <AudioPlayer
+                  jobId={jobId}
+                  getAuthHeaders={getAuthHeaders}
+                  className="audio-player-complete" // Add a class for potential styling
+                />
               </>
             )}
 

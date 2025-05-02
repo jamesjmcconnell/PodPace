@@ -21,7 +21,7 @@ function getSupabaseAdminClient(): SupabaseClient {
 // --- Stripe Client ---
 // Ensure STRIPE_SECRET_KEY is set if you need to make API calls *to* Stripe
 // For webhooks only, we primarily need the webhook secret below.
-// const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' });
+// const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-03-31.basil' });
 
 
 // --- Webhook Handler Logic ---
@@ -49,7 +49,7 @@ export async function handleStripeWebhook(req: Request): Promise<Response> {
     let event: Stripe.Event;
     try {
         // Need a valid secret key temporarily for constructEvent, even if it's just the webhook secret
-        const tempStripe = new Stripe(process.env.STRIPE_SECRET_KEY || webhookSecret!, { apiVersion: '2024-06-20' });
+        const tempStripe = new Stripe(process.env.STRIPE_SECRET_KEY || webhookSecret!, { apiVersion: '2025-03-31.basil' });
         event = tempStripe.webhooks.constructEvent(rawBody, signature!, webhookSecret!);
     } catch (err: any) {
         console.error(`Webhook signature verification failed: ${err.message}`);
@@ -76,7 +76,7 @@ export async function handleStripeWebhook(req: Request): Promise<Response> {
                         stripe_subscription_id: subscription.id,
                         stripe_customer_id: subscription.customer as string,
                         status: subscription.status as SubscriptionStatus, // Cast to our manual type
-                        current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+                        current_period_end: new Date((subscription as any)?.current_period_end * 1000 || Date.now()).toISOString(),
                         updated_at: new Date().toISOString()
                         // user_id is NOT included here as we can't reliably get it from the event alone
                         // for *new* subscriptions without prior setup during checkout.
