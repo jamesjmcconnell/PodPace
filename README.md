@@ -4,6 +4,8 @@ This application allows users to upload podcast audio files, analyze speaker WPM
 
 I made this because listening to a podcast at 2x speed with Larry Summers was unbearable, he was so slow and going higher made other people too hard to understand
 
+I also used this as an oppourtunity to try ourt a bunch of coding models/agents, with very limited oversight, i guided some decisons but gave agents lots of freedom to write bad code
+
 ## Prerequisites
 
 Before running the application, ensure you have the following installed and configured:
